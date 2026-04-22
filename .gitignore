@@ -3,3 +3,10 @@ __pycache__/
 *.venv
 .idea/
 .cache/
+.claude/
+.vscode/
+.env
+.env.*
+*.local
+*.local.json
+*.log
