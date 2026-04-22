@@ -343,12 +343,19 @@ class WeChatAIApp:
         )
         return result
 
-    def _flush_active_pending(self, now: float, current_session_name: str | None = None) -> dict[str, int]:
+    def _flush_active_pending(
+        self,
+        now: float,
+        current_session_name: str | None = None,
+        *,
+        force: bool = False,
+        reason: str | None = None,
+    ) -> dict[str, int]:
         result = {"friend_replies": 0, "group_replies": 0, "errors": 0}
         if not self.active_pending_session or not self.active_pending_messages:
             return result
 
-        should_flush = False
+        should_flush = force
         if current_session_name and current_session_name != self.active_pending_session:
             should_flush = True
         elif self.active_pending_deadline is not None and now >= self.active_pending_deadline:
@@ -356,6 +363,9 @@ class WeChatAIApp:
         if not should_flush:
             return result
 
+        pending_session = self.active_pending_session
+        pending_messages = list(self.active_pending_messages)
+        pending_is_group = self.active_pending_is_group
         try:
             merged_message = self._build_merged_message(self.active_pending_messages)
             if merged_message:
@@ -368,6 +378,14 @@ class WeChatAIApp:
                 result["friend_replies"] += send_result["friend_replies"]
                 result["group_replies"] += send_result["group_replies"]
                 result["errors"] += send_result["errors"]
+                if force:
+                    self._log_event(
+                        "shutdown_flush",
+                        chat_id=pending_session,
+                        chat_type="group" if pending_is_group else "friend",
+                        pending_count=len(pending_messages),
+                        reason=reason or "shutdown",
+                    )
         except Exception as exc:
             self._debug(f"flush_active_pending failed session={self.active_pending_session!r} error={type(exc).__name__}: {exc}")
             result["errors"] += 1
@@ -546,12 +564,22 @@ class WeChatAIApp:
             result["errors"] += 1
             return result
 
-    def run_global_auto_reply(self, duration: str, poll_interval: float = 1.0) -> dict[str, int | float]:
+    def run_global_auto_reply(
+        self,
+        duration: str,
+        poll_interval: float = 1.0,
+        *,
+        forever: bool = False,
+        heartbeat_interval: float = 60.0,
+        error_backoff_seconds: float = 5.0,
+    ) -> dict[str, int | float]:
         duration_seconds = Tools.match_duration(duration)
         if duration_seconds is None:
             raise ValueError(f"Invalid duration: {duration}")
         if poll_interval <= 0:
             raise ValueError("poll_interval must be greater than 0")
+        if error_backoff_seconds <= 0:
+            raise ValueError("error_backoff_seconds must be greater than 0")
 
         stats: dict[str, int | float] = {
             "duration_seconds": duration_seconds,
@@ -563,29 +591,67 @@ class WeChatAIApp:
             "errors": 0,
         }
         self._debug(
-            f"global auto reply start mention_names={self.mention_names!r} duration={duration!r} poll_interval={poll_interval} active_merge_window={self.active_merge_window}"
+            f"global auto reply start mention_names={self.mention_names!r} duration={duration!r} poll_interval={poll_interval} active_merge_window={self.active_merge_window} forever={forever} heartbeat_interval={heartbeat_interval} error_backoff_seconds={error_backoff_seconds}"
         )
-        end_timestamp = time.time() + duration_seconds
-        while time.time() < end_timestamp:
-            now = time.time()
-            unread_sessions = Messages.check_new_messages(close_weixin=False)
-            stats["polls"] += 1
-            self._debug(f"poll={stats['polls']} unread_sessions={unread_sessions!r}")
-            for session_name, unread_messages in unread_sessions.items():
-                stats["sessions"] += 1
-                session_result = self.process_unread_session(session_name, unread_messages)
-                stats["friend_replies"] += session_result["friend_replies"]
-                stats["group_replies"] += session_result["group_replies"]
-                stats["errors"] += session_result["errors"]
-            active_result = self.process_active_chat_session(now=now)
-            stats["friend_replies"] += active_result["friend_replies"]
-            stats["group_replies"] += active_result["group_replies"]
-            stats["errors"] += active_result["errors"]
-            if time.time() >= end_timestamp:
-                break
-            time.sleep(poll_interval)
+        end_timestamp = None if forever else time.time() + duration_seconds
+        next_heartbeat_at = time.time() + heartbeat_interval if heartbeat_interval > 0 else None
+        consecutive_loop_errors = 0
 
-        flush_result = self._flush_active_pending(now=time.time())
+        while True:
+            now = time.time()
+            if end_timestamp is not None and now >= end_timestamp:
+                break
+            if next_heartbeat_at is not None and now >= next_heartbeat_at:
+                self._debug(
+                    f"heartbeat polls={stats['polls']} sessions={stats['sessions']} friend_replies={stats['friend_replies']} group_replies={stats['group_replies']} errors={stats['errors']}"
+                )
+                self._log_event(
+                    "heartbeat",
+                    polls=stats["polls"],
+                    sessions=stats["sessions"],
+                    friend_replies=stats["friend_replies"],
+                    group_replies=stats["group_replies"],
+                    errors=stats["errors"],
+                )
+                next_heartbeat_at = now + heartbeat_interval
+            try:
+                unread_sessions = Messages.check_new_messages(close_weixin=False)
+                stats["polls"] += 1
+                self._debug(f"poll={stats['polls']} unread_sessions={unread_sessions!r}")
+                for session_name, unread_messages in unread_sessions.items():
+                    stats["sessions"] += 1
+                    session_result = self.process_unread_session(session_name, unread_messages)
+                    stats["friend_replies"] += session_result["friend_replies"]
+                    stats["group_replies"] += session_result["group_replies"]
+                    stats["errors"] += session_result["errors"]
+                active_result = self.process_active_chat_session(now=now)
+                stats["friend_replies"] += active_result["friend_replies"]
+                stats["group_replies"] += active_result["group_replies"]
+                stats["errors"] += active_result["errors"]
+                consecutive_loop_errors = 0
+                if end_timestamp is not None and time.time() >= end_timestamp:
+                    break
+                time.sleep(poll_interval)
+            except KeyboardInterrupt:
+                self._debug("global auto reply interrupted by keyboard")
+                break
+            except Exception as exc:
+                consecutive_loop_errors += 1
+                stats["errors"] += 1
+                backoff_seconds = min(error_backoff_seconds * (2 ** (consecutive_loop_errors - 1)), 60.0)
+                self._debug(
+                    f"global auto reply loop error={type(exc).__name__}: {exc} consecutive={consecutive_loop_errors} backoff={backoff_seconds}"
+                )
+                self._log_event(
+                    "loop_error",
+                    exception_type=type(exc).__name__,
+                    exception_message=str(exc),
+                    consecutive_errors=consecutive_loop_errors,
+                    backoff_seconds=backoff_seconds,
+                )
+                time.sleep(backoff_seconds)
+
+        flush_result = self._flush_active_pending(now=time.time(), force=True, reason="shutdown")
         stats["friend_replies"] += flush_result["friend_replies"]
         stats["group_replies"] += flush_result["group_replies"]
         stats["errors"] += flush_result["errors"]

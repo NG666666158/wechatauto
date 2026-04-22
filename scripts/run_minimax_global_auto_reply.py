@@ -22,6 +22,9 @@ def main() -> int:
     parser.add_argument("--poll-interval", type=float, default=1.0, help="Polling interval in seconds")
     parser.add_argument("--debug", action="store_true", help="Print runtime debug logs")
     parser.add_argument("--active-merge-window", type=float, default=3.0, help="Merge window for the currently open chat in seconds")
+    parser.add_argument("--forever", action="store_true", help="Run continuously until interrupted")
+    parser.add_argument("--heartbeat-interval", type=float, default=60.0, help="Heartbeat event interval in seconds; set <= 0 to disable")
+    parser.add_argument("--error-backoff-seconds", type=float, default=5.0, help="Base retry backoff in seconds after loop errors")
     args = parser.parse_args()
 
     app = WeChatAIApp.from_env()
@@ -30,6 +33,9 @@ def main() -> int:
     result = app.run_global_auto_reply(
         duration=args.duration,
         poll_interval=args.poll_interval,
+        forever=args.forever,
+        heartbeat_interval=args.heartbeat_interval,
+        error_backoff_seconds=args.error_backoff_seconds,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0

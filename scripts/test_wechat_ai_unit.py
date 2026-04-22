@@ -473,10 +473,237 @@ class GlobalAutoReplyTests(unittest.TestCase):
             self.runtime.WeChatAIApp.process_unread_session = original_unread
             self.runtime.WeChatAIApp.process_active_chat_session = original_active
 
-        self.assertEqual(result["polls"], 2)
+        self.assertEqual(result["polls"], 3)
         self.assertEqual(result["friend_replies"], 1)
         self.assertEqual(result["group_replies"], 1)
         self.assertEqual(result["errors"], 0)
+
+    def test_run_global_auto_reply_forever_stops_cleanly_on_keyboard_interrupt(self) -> None:
+        class FakeMessages:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def check_new_messages(self, close_weixin=False):
+                self.calls += 1
+                if self.calls >= 2:
+                    raise KeyboardInterrupt()
+                return {"Alice": ["hello"]}
+
+        self.runtime.Messages = FakeMessages()
+        self.runtime.Tools = types.SimpleNamespace(match_duration=lambda duration: 999)
+        self.runtime.time = types.SimpleNamespace(
+            sleep=lambda seconds: None,
+            time=iter([0.0, 0.0, 0.5, 1.0]).__next__,
+        )
+
+        app = self.build_app()
+
+        original_unread = self.runtime.WeChatAIApp.process_unread_session
+        original_active = self.runtime.WeChatAIApp.process_active_chat_session
+        self.runtime.WeChatAIApp.process_unread_session = lambda self, session_name, unread_messages: {
+            "friend_replies": 1,
+            "group_replies": 0,
+            "errors": 0,
+        }
+        self.runtime.WeChatAIApp.process_active_chat_session = lambda self, now=None: {
+            "friend_replies": 0,
+            "group_replies": 0,
+            "errors": 0,
+        }
+        try:
+            result = app.run_global_auto_reply(duration="999s", poll_interval=0.5, forever=True)
+        finally:
+            self.runtime.WeChatAIApp.process_unread_session = original_unread
+            self.runtime.WeChatAIApp.process_active_chat_session = original_active
+
+        self.assertEqual(result["polls"], 1)
+        self.assertEqual(result["friend_replies"], 1)
+        self.assertEqual(result["errors"], 0)
+
+    def test_run_global_auto_reply_emits_heartbeat_events(self) -> None:
+        logged_events: list[dict[str, object]] = []
+
+        class FakeMessages:
+            def check_new_messages(self, close_weixin=False):
+                return {}
+
+        self.runtime.Messages = FakeMessages()
+        self.runtime.Tools = types.SimpleNamespace(match_duration=lambda duration: 2)
+        self.runtime.time = types.SimpleNamespace(
+            sleep=lambda seconds: None,
+            time=iter([0.0, 0.0, 0.6, 0.6, 1.2, 1.2, 1.8, 1.8, 2.1, 2.1]).__next__,
+        )
+
+        app = self.build_app()
+        app.engine.event_logger = types.SimpleNamespace(
+            log_event=lambda event_type, **fields: logged_events.append({"event_type": event_type, **fields})
+        )
+
+        original_active = self.runtime.WeChatAIApp.process_active_chat_session
+        self.runtime.WeChatAIApp.process_active_chat_session = lambda self, now=None: {
+            "friend_replies": 0,
+            "group_replies": 0,
+            "errors": 0,
+        }
+        try:
+            result = app.run_global_auto_reply(
+                duration="2s",
+                poll_interval=0.5,
+                heartbeat_interval=0.5,
+            )
+        finally:
+            self.runtime.WeChatAIApp.process_active_chat_session = original_active
+
+        self.assertEqual(result["errors"], 0)
+        heartbeat_events = [event for event in logged_events if event["event_type"] == "heartbeat"]
+        self.assertGreaterEqual(len(heartbeat_events), 2)
+
+    def test_run_global_auto_reply_retries_after_loop_errors_with_backoff(self) -> None:
+        sleep_calls: list[float] = []
+
+        class FakeMessages:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def check_new_messages(self, close_weixin=False):
+                self.calls += 1
+                if self.calls <= 2:
+                    raise RuntimeError("ui busy")
+                return {"Alice": ["hello"]}
+
+        self.runtime.Messages = FakeMessages()
+        self.runtime.Tools = types.SimpleNamespace(match_duration=lambda duration: 2)
+        self.runtime.time = types.SimpleNamespace(
+            sleep=lambda seconds: sleep_calls.append(seconds),
+            time=iter([0.0, 0.0, 0.5, 1.0, 1.2, 1.6, 2.1, 2.1]).__next__,
+        )
+
+        app = self.build_app()
+
+        original_unread = self.runtime.WeChatAIApp.process_unread_session
+        original_active = self.runtime.WeChatAIApp.process_active_chat_session
+        self.runtime.WeChatAIApp.process_unread_session = lambda self, session_name, unread_messages: {
+            "friend_replies": 1,
+            "group_replies": 0,
+            "errors": 0,
+        }
+        self.runtime.WeChatAIApp.process_active_chat_session = lambda self, now=None: {
+            "friend_replies": 0,
+            "group_replies": 0,
+            "errors": 0,
+        }
+        try:
+            result = app.run_global_auto_reply(
+                duration="2s",
+                poll_interval=0.5,
+                error_backoff_seconds=1.0,
+            )
+        finally:
+            self.runtime.WeChatAIApp.process_unread_session = original_unread
+            self.runtime.WeChatAIApp.process_active_chat_session = original_active
+
+        self.assertGreaterEqual(result["errors"], 2)
+        self.assertEqual(result["friend_replies"], 1)
+        self.assertEqual(sleep_calls[:2], [1.0, 2.0])
+
+    def test_run_global_auto_reply_resets_backoff_after_success(self) -> None:
+        sleep_calls: list[float] = []
+
+        class FakeMessages:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def check_new_messages(self, close_weixin=False):
+                self.calls += 1
+                if self.calls in (1, 2, 4):
+                    raise RuntimeError(f"ui busy {self.calls}")
+                return {"Alice": ["hello"]}
+
+        self.runtime.Messages = FakeMessages()
+        self.runtime.Tools = types.SimpleNamespace(match_duration=lambda duration: 3)
+        self.runtime.time = types.SimpleNamespace(
+            sleep=lambda seconds: sleep_calls.append(seconds),
+            time=iter([0.0, 0.0, 0.5, 1.0, 1.2, 1.6, 2.0, 2.2, 2.6, 3.1, 3.1]).__next__,
+        )
+
+        app = self.build_app()
+
+        original_unread = self.runtime.WeChatAIApp.process_unread_session
+        original_active = self.runtime.WeChatAIApp.process_active_chat_session
+        self.runtime.WeChatAIApp.process_unread_session = lambda self, session_name, unread_messages: {
+            "friend_replies": 1,
+            "group_replies": 0,
+            "errors": 0,
+        }
+        self.runtime.WeChatAIApp.process_active_chat_session = lambda self, now=None: {
+            "friend_replies": 0,
+            "group_replies": 0,
+            "errors": 0,
+        }
+        try:
+            result = app.run_global_auto_reply(
+                duration="3s",
+                poll_interval=0.5,
+                error_backoff_seconds=1.0,
+            )
+        finally:
+            self.runtime.WeChatAIApp.process_unread_session = original_unread
+            self.runtime.WeChatAIApp.process_active_chat_session = original_active
+
+        self.assertGreaterEqual(result["errors"], 3)
+        self.assertEqual(sleep_calls[:4], [1.0, 2.0, 0.5, 1.0])
+
+    def test_run_global_auto_reply_flushes_pending_messages_on_interrupt_and_logs_event(self) -> None:
+        logged_events: list[dict[str, object]] = []
+
+        class FakeMessages:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def check_new_messages(self, close_weixin=False):
+                self.calls += 1
+                if self.calls >= 2:
+                    raise KeyboardInterrupt()
+                return {}
+
+        self.runtime.Messages = FakeMessages()
+        self.runtime.Tools = types.SimpleNamespace(match_duration=lambda duration: 999)
+        self.runtime.time = types.SimpleNamespace(
+            sleep=lambda seconds: None,
+            time=iter([0.0, 0.0, 0.5, 1.0]).__next__,
+        )
+
+        app = self.build_app()
+        app.engine.event_logger = types.SimpleNamespace(
+            log_event=lambda event_type, **fields: logged_events.append({"event_type": event_type, **fields})
+        )
+        app.active_pending_session = "Alice"
+        app.active_pending_is_group = False
+        app.active_pending_messages = ["buffered-1", "buffered-2"]
+        app.active_pending_contexts = ["ctx-1"]
+        app.active_pending_deadline = 10.0
+
+        sent_messages: list[tuple[str, list[str]]] = []
+        self.runtime.Messages.send_messages_to_friend = lambda friend, messages, close_weixin=False: sent_messages.append(
+            (friend, messages)
+        )
+
+        original_active = self.runtime.WeChatAIApp.process_active_chat_session
+        self.runtime.WeChatAIApp.process_active_chat_session = lambda self, now=None: {
+            "friend_replies": 0,
+            "group_replies": 0,
+            "errors": 0,
+        }
+        try:
+            result = app.run_global_auto_reply(duration="999s", poll_interval=0.5, forever=True)
+        finally:
+            self.runtime.WeChatAIApp.process_active_chat_session = original_active
+
+        self.assertEqual(result["friend_replies"], 1)
+        self.assertEqual(sent_messages, [("Alice", ["reply:buffered-1\nbuffered-2"])])
+        shutdown_flush_events = [event for event in logged_events if event["event_type"] == "shutdown_flush"]
+        self.assertEqual(len(shutdown_flush_events), 1)
+        self.assertEqual(shutdown_flush_events[0]["chat_id"], "Alice")
 
 
 if __name__ == "__main__":
