@@ -1,0 +1,426 @@
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+from dataclasses import field
+
+import pyautogui
+
+from pyweixin import AutoReply, Contacts, GlobalConfig, Messages, Navigator, Tools
+from pyweixin.Uielements import Edits as _Edits
+from pyweixin.Uielements import Lists as _Lists
+from pyweixin.Uielements import Texts as _Texts
+from pyweixin.WinSettings import SystemSettings
+
+from .config import MiniMaxSettings, ReplySettings
+from .minimax_provider import MiniMaxProvider
+from .reply_engine import ReplyEngine, ScenePrompts
+
+
+Edits = _Edits() if callable(_Edits) else _Edits
+Lists = _Lists() if callable(_Lists) else _Lists
+Texts = _Texts() if callable(_Texts) else _Texts
+
+
+@dataclass(slots=True)
+class WeChatAIApp:
+    engine: ReplyEngine
+    fallback_reply: str
+    mention_names: tuple[str, ...]
+    processed_signatures: set[str] = field(default_factory=set)
+    debug: bool = False
+    active_merge_window: float = 3.0
+    active_pending_session: str | None = None
+    active_pending_is_group: bool = False
+    active_pending_messages: list[str] = field(default_factory=list)
+    active_pending_contexts: list[str] = field(default_factory=list)
+    active_pending_deadline: float | None = None
+    active_last_seen_signature_by_session: dict[str, str] = field(default_factory=dict)
+
+    @classmethod
+    def from_env(cls) -> "WeChatAIApp":
+        minimax = MiniMaxSettings.from_env()
+        reply = ReplySettings.from_env()
+        provider = MiniMaxProvider(
+            api_key=minimax.api_key,
+            api_url=minimax.api_url,
+            timeout=minimax.timeout,
+        )
+        engine = ReplyEngine(
+            provider=provider,
+            prompts=ScenePrompts(
+                friend_system_prompt=reply.friend_system_prompt,
+                group_system_prompt=reply.group_system_prompt,
+            ),
+            context_limit=reply.context_limit,
+            model=minimax.model,
+        )
+        mention_names = reply.group_mention_names
+        if not mention_names:
+            try:
+                my_profile = Contacts.check_my_info(close_weixin=False)
+                nickname = ""
+                for key in ("昵称", "名稱", "名称", "微信昵称", "显示名"):
+                    value = my_profile.get(key)
+                    if value:
+                        nickname = str(value).strip()
+                        break
+                mention_names = (nickname,) if nickname else ()
+            except Exception:
+                mention_names = ()
+        return cls(engine=engine, fallback_reply=reply.fallback_reply, mention_names=mention_names)
+
+    def _debug(self, message: str) -> None:
+        if self.debug:
+            print(f"[wechat_ai] {message}")
+
+    def friend_callback(self, new_message: str, contexts: list[str]) -> str:
+        try:
+            reply = self.engine.generate_friend_reply(latest_message=new_message, contexts=contexts)
+            return reply or self.fallback_reply
+        except Exception as exc:
+            self._debug(f"friend_callback failed error={type(exc).__name__}: {exc}")
+            return self.fallback_reply
+
+    def group_callback(self, new_message: str, contexts: list[str]) -> str:
+        try:
+            reply = self.engine.generate_group_reply(latest_message=new_message, contexts=contexts)
+            return reply or self.fallback_reply
+        except Exception as exc:
+            self._debug(f"group_callback failed error={type(exc).__name__}: {exc}")
+            return self.fallback_reply
+
+    def run_friend_auto_reply(self, friend: str, duration: str, window_minimize: bool = False) -> dict:
+        dialog_window = Navigator.open_seperate_dialog_window(
+            friend=friend,
+            window_minimize=window_minimize,
+            close_weixin=False,
+        )
+        return AutoReply.auto_reply_to_friend(
+            dialog_window=dialog_window,
+            duration=duration,
+            callback=self.friend_callback,
+            close_dialog_window=True,
+        )
+
+    def run_group_at_auto_reply(self, group_name: str, duration: str) -> dict:
+        GlobalConfig.close_weixin = False
+        main_window = Navigator.open_dialog_window(
+            friend=group_name,
+            is_maximize=False,
+            search_pages=GlobalConfig.search_pages,
+        )
+        if not Tools.is_group_chat(main_window):
+            raise ValueError(f"{group_name} is not a group chat")
+        chat_list = main_window.child_window(**Lists.FriendChatList)
+        input_edit = main_window.child_window(**Edits.InputEdit)
+        Tools.activate_chatList(chat_list)
+        initial_runtime_id = 0
+        if chat_list.children(control_type="ListItem"):
+            initial_runtime_id = chat_list.children(control_type="ListItem")[-1].element_info.runtime_id
+        duration_seconds = Tools.match_duration(duration)
+        if duration_seconds is None:
+            raise ValueError(f"Invalid duration: {duration}")
+        end_timestamp = time.time() + duration_seconds
+        replies = 0
+        SystemSettings.open_listening_mode(volume=False)
+        try:
+            while time.time() < end_timestamp:
+                if not chat_list.children(control_type="ListItem"):
+                    continue
+                new_message = chat_list.children(control_type="ListItem")[-1]
+                runtime_id = new_message.element_info.runtime_id
+                if runtime_id == initial_runtime_id:
+                    continue
+                initial_runtime_id = runtime_id
+                if new_message.class_name() != "mmui::ChatTextItemView":
+                    continue
+                if Tools.is_my_bubble(main_window, new_message):
+                    continue
+                text = new_message.window_text().strip()
+                if not self._is_group_mention(text):
+                    continue
+                contexts = [
+                    item.window_text()
+                    for item in chat_list.children(control_type="ListItem")
+                    if item.window_text().strip()
+                ]
+                reply = self.group_callback(text, contexts)
+                input_edit.click_input()
+                SystemSettings.copy_text_to_clipboard(reply)
+                pyautogui.hotkey("ctrl", "v", _pause=False)
+                pyautogui.hotkey("alt", "s", _pause=False)
+                replies += 1
+        finally:
+            SystemSettings.close_listening_mode()
+            main_window.close()
+        return {"group": group_name, "replies_sent": replies}
+
+    def _build_merged_message(self, messages: list[str]) -> str:
+        return "\n".join(message.strip() for message in messages if message.strip())
+
+    def _send_reply(self, session_name: str, message_text: str, contexts: list[str], is_group: bool) -> dict[str, int]:
+        result = {"friend_replies": 0, "group_replies": 0, "errors": 0}
+        if not message_text.strip():
+            return result
+        if is_group:
+            reply = self.group_callback(message_text, contexts)
+            result["group_replies"] += 1
+        else:
+            reply = self.friend_callback(message_text, contexts)
+            result["friend_replies"] += 1
+        self._debug(f"send_reply session={session_name!r} is_group={is_group} text={message_text!r} reply={reply!r}")
+        Messages.send_messages_to_friend(
+            friend=session_name,
+            messages=[reply],
+            close_weixin=False,
+        )
+        return result
+
+    def _flush_active_pending(self, now: float, current_session_name: str | None = None) -> dict[str, int]:
+        result = {"friend_replies": 0, "group_replies": 0, "errors": 0}
+        if not self.active_pending_session or not self.active_pending_messages:
+            return result
+
+        should_flush = False
+        if current_session_name and current_session_name != self.active_pending_session:
+            should_flush = True
+        elif self.active_pending_deadline is not None and now >= self.active_pending_deadline:
+            should_flush = True
+        if not should_flush:
+            return result
+
+        try:
+            merged_message = self._build_merged_message(self.active_pending_messages)
+            if merged_message:
+                send_result = self._send_reply(
+                    session_name=self.active_pending_session,
+                    message_text=merged_message,
+                    contexts=self.active_pending_contexts,
+                    is_group=self.active_pending_is_group,
+                )
+                result["friend_replies"] += send_result["friend_replies"]
+                result["group_replies"] += send_result["group_replies"]
+                result["errors"] += send_result["errors"]
+        except Exception as exc:
+            self._debug(f"flush_active_pending failed session={self.active_pending_session!r} error={type(exc).__name__}: {exc}")
+            result["errors"] += 1
+        finally:
+            self.active_pending_session = None
+            self.active_pending_is_group = False
+            self.active_pending_messages = []
+            self.active_pending_contexts = []
+            self.active_pending_deadline = None
+        return result
+
+    def process_unread_session(self, session_name: str, unread_messages: list[str]) -> dict[str, int]:
+        result = {"friend_replies": 0, "group_replies": 0, "errors": 0}
+        if not unread_messages:
+            return result
+
+        self._debug(f"process_unread_session session={session_name!r} unread_messages={unread_messages!r}")
+        main_window = Navigator.open_dialog_window(
+            friend=session_name,
+            is_maximize=False,
+            search_pages=GlobalConfig.search_pages,
+        )
+        try:
+            is_group = Tools.is_group_chat(main_window)
+            contexts = list(
+                Messages.pull_messages(
+                    friend=session_name,
+                    number=max(len(unread_messages), getattr(self.engine, "context_limit", len(unread_messages)) or len(unread_messages)),
+                    close_weixin=False,
+                    search_pages=GlobalConfig.search_pages,
+                )
+            )
+            if not contexts:
+                contexts = list(unread_messages)
+
+            for unread_message in unread_messages:
+                if not isinstance(unread_message, str):
+                    continue
+                text = unread_message.strip()
+                if not text:
+                    continue
+                signature = f"{session_name}\0unread\0{text}"
+                if signature in self.processed_signatures:
+                    continue
+                if is_group and not self._is_group_mention(text):
+                    self._debug(f"skip group unread without mention session={session_name!r} text={text!r}")
+                    self.processed_signatures.add(signature)
+                    continue
+                send_result = self._send_reply(
+                    session_name=session_name,
+                    message_text=text,
+                    contexts=contexts,
+                    is_group=is_group,
+                )
+                result["friend_replies"] += send_result["friend_replies"]
+                result["group_replies"] += send_result["group_replies"]
+                result["errors"] += send_result["errors"]
+                self.processed_signatures.add(signature)
+                contexts.append(text)
+            return result
+        except Exception as exc:
+            self._debug(f"process_unread_session failed session={session_name!r} error={type(exc).__name__}: {exc}")
+            result["errors"] += 1
+            return result
+        finally:
+            if hasattr(main_window, "close"):
+                try:
+                    main_window.close()
+                except Exception:
+                    pass
+
+    def _item_signature(self, item) -> str:
+        runtime_id = getattr(item.element_info, "runtime_id", None)
+        class_name = ""
+        text = ""
+        try:
+            class_name = item.class_name()
+        except Exception:
+            pass
+        try:
+            text = item.window_text().strip()
+        except Exception:
+            pass
+        return f"{runtime_id}|{class_name}|{text}"
+
+    def _collect_active_incoming_messages(self, main_window, session_name: str) -> tuple[bool, list[str], list[str]]:
+        chat_list = main_window.child_window(**Lists.FriendChatList)
+        if hasattr(Tools, "activate_chatList"):
+            try:
+                Tools.activate_chatList(chat_list)
+            except Exception as exc:
+                self._debug(f"activate_chatList failed session={session_name!r} error={type(exc).__name__}: {exc}")
+        items = chat_list.children(control_type="ListItem")
+        if not items:
+            return False, [], []
+
+        is_group = Tools.is_group_chat(main_window)
+        contexts = [item.window_text() for item in items if item.window_text().strip()]
+        latest_signature = self._item_signature(items[-1])
+        previous_signature = self.active_last_seen_signature_by_session.get(session_name)
+        if previous_signature is None:
+            self.active_last_seen_signature_by_session[session_name] = latest_signature
+            self._debug(f"bootstrap active session={session_name!r} visible_items={len(items)} latest_signature={latest_signature!r}")
+            return is_group, [], contexts
+        candidate_items: list[object] = []
+        for item in reversed(items):
+            signature = self._item_signature(item)
+            if signature == previous_signature:
+                break
+            candidate_items.append(item)
+        self.active_last_seen_signature_by_session[session_name] = latest_signature
+
+        new_messages: list[str] = []
+        for item in reversed(candidate_items):
+            text = item.window_text().strip()
+            if not text:
+                continue
+            if item.class_name() != "mmui::ChatTextItemView":
+                continue
+            if Tools.is_my_bubble(main_window, item):
+                continue
+            if is_group and not self._is_group_mention(text):
+                self._debug(f"active group skip without mention session={session_name!r} text={text!r}")
+                continue
+            new_messages.append(text)
+        return is_group, new_messages, contexts
+
+    def process_active_chat_session(self, now: float | None = None) -> dict[str, int]:
+        result = {"friend_replies": 0, "group_replies": 0, "errors": 0}
+        if now is None:
+            now = time.time()
+
+        current_session_name: str | None = None
+        try:
+            main_window = Navigator.open_weixin(is_maximize=False)
+            current_chat_label = main_window.child_window(**Texts.CurrentChatText)
+            if hasattr(current_chat_label, "exists") and not current_chat_label.exists(timeout=0.1):
+                return self._flush_active_pending(now=now)
+
+            current_session_name = current_chat_label.window_text().strip()
+            if not current_session_name:
+                return self._flush_active_pending(now=now)
+
+            flush_result = self._flush_active_pending(now=now, current_session_name=current_session_name)
+            result["friend_replies"] += flush_result["friend_replies"]
+            result["group_replies"] += flush_result["group_replies"]
+            result["errors"] += flush_result["errors"]
+
+            is_group, new_messages, contexts = self._collect_active_incoming_messages(main_window, current_session_name)
+            if new_messages:
+                self._debug(f"active session={current_session_name!r} buffered_messages={new_messages!r}")
+                if self.active_pending_session != current_session_name:
+                    self.active_pending_session = current_session_name
+                    self.active_pending_is_group = is_group
+                    self.active_pending_messages = []
+                self.active_pending_contexts = contexts
+                self.active_pending_is_group = is_group
+                self.active_pending_messages.extend(new_messages)
+                self.active_pending_deadline = now + self.active_merge_window
+
+            flush_result = self._flush_active_pending(now=now, current_session_name=current_session_name)
+            result["friend_replies"] += flush_result["friend_replies"]
+            result["group_replies"] += flush_result["group_replies"]
+            result["errors"] += flush_result["errors"]
+            return result
+        except Exception as exc:
+            self._debug(f"process_active_chat_session failed error={type(exc).__name__}: {exc}")
+            result["errors"] += 1
+            return result
+
+    def run_global_auto_reply(self, duration: str, poll_interval: float = 1.0) -> dict[str, int | float]:
+        duration_seconds = Tools.match_duration(duration)
+        if duration_seconds is None:
+            raise ValueError(f"Invalid duration: {duration}")
+        if poll_interval <= 0:
+            raise ValueError("poll_interval must be greater than 0")
+
+        stats: dict[str, int | float] = {
+            "duration_seconds": duration_seconds,
+            "poll_interval": poll_interval,
+            "polls": 0,
+            "sessions": 0,
+            "friend_replies": 0,
+            "group_replies": 0,
+            "errors": 0,
+        }
+        self._debug(
+            f"global auto reply start mention_names={self.mention_names!r} duration={duration!r} poll_interval={poll_interval} active_merge_window={self.active_merge_window}"
+        )
+        end_timestamp = time.time() + duration_seconds
+        while time.time() < end_timestamp:
+            now = time.time()
+            unread_sessions = Messages.check_new_messages(close_weixin=False)
+            stats["polls"] += 1
+            self._debug(f"poll={stats['polls']} unread_sessions={unread_sessions!r}")
+            for session_name, unread_messages in unread_sessions.items():
+                stats["sessions"] += 1
+                session_result = self.process_unread_session(session_name, unread_messages)
+                stats["friend_replies"] += session_result["friend_replies"]
+                stats["group_replies"] += session_result["group_replies"]
+                stats["errors"] += session_result["errors"]
+            active_result = self.process_active_chat_session(now=now)
+            stats["friend_replies"] += active_result["friend_replies"]
+            stats["group_replies"] += active_result["group_replies"]
+            stats["errors"] += active_result["errors"]
+            if time.time() >= end_timestamp:
+                break
+            time.sleep(poll_interval)
+
+        flush_result = self._flush_active_pending(now=time.time())
+        stats["friend_replies"] += flush_result["friend_replies"]
+        stats["group_replies"] += flush_result["group_replies"]
+        stats["errors"] += flush_result["errors"]
+        return stats
+
+    def _is_group_mention(self, text: str) -> bool:
+        normalized = text.replace("＠", "@").replace("\u2005", " ").replace("\xa0", " ")
+        if "@所有人" in normalized:
+            return True
+        if "@" not in normalized:
+            return False
+        return any(name and f"@{name}" in normalized for name in self.mention_names)

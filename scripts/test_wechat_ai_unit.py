@@ -1,0 +1,367 @@
+from __future__ import annotations
+
+import importlib
+import json
+import sys
+import types
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+
+from wechat_ai.context import build_context_window  # type: ignore  # noqa: E402
+from wechat_ai.minimax_provider import MiniMaxProvider  # type: ignore  # noqa: E402
+from wechat_ai.reply_engine import ReplyEngine, ScenePrompts  # type: ignore  # noqa: E402
+
+
+def import_wechat_runtime_with_stubs():
+    pyautogui_stub = types.ModuleType("pyautogui")
+    pyautogui_stub.hotkey = lambda *args, **kwargs: None
+
+    pyweixin_stub = types.ModuleType("pyweixin")
+    pyweixin_stub.AutoReply = object()
+    pyweixin_stub.Contacts = object()
+    pyweixin_stub.GlobalConfig = types.SimpleNamespace(close_weixin=False, search_pages=5)
+    pyweixin_stub.Navigator = object()
+    pyweixin_stub.Tools = object()
+    pyweixin_stub.Messages = object()
+
+    uielements_stub = types.ModuleType("pyweixin.Uielements")
+    uielements_stub.Edits = types.SimpleNamespace(InputEdit={"_kind": "InputEdit"})
+    uielements_stub.Lists = types.SimpleNamespace(FriendChatList={"_kind": "FriendChatList"})
+    uielements_stub.Texts = types.SimpleNamespace(CurrentChatText={"_kind": "CurrentChatText"})
+
+    winsettings_stub = types.ModuleType("pyweixin.WinSettings")
+    winsettings_stub.SystemSettings = types.SimpleNamespace(
+        open_listening_mode=lambda **kwargs: None,
+        close_listening_mode=lambda: None,
+        copy_text_to_clipboard=lambda text: None,
+    )
+
+    original_modules = {
+        name: sys.modules.get(name)
+        for name in ("pyautogui", "pyweixin", "pyweixin.Uielements", "pyweixin.WinSettings", "wechat_ai.wechat_runtime")
+    }
+    sys.modules["pyautogui"] = pyautogui_stub
+    sys.modules["pyweixin"] = pyweixin_stub
+    sys.modules["pyweixin.Uielements"] = uielements_stub
+    sys.modules["pyweixin.WinSettings"] = winsettings_stub
+    sys.modules.pop("wechat_ai.wechat_runtime", None)
+    try:
+        return importlib.import_module("wechat_ai.wechat_runtime")
+    finally:
+        for name, module in original_modules.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+
+
+class ReplyEngineTests(unittest.TestCase):
+    def test_context_window_keeps_latest_ten_messages(self) -> None:
+        contexts = [f"msg-{index}" for index in range(15)]
+        window = build_context_window(contexts, limit=10)
+        self.assertEqual(window[0], "msg-5")
+        self.assertEqual(window[-1], "msg-14")
+        self.assertEqual(len(window), 10)
+
+    def test_provider_builds_minimax_payload_and_parses_reply(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_transport(url: str, headers: dict[str, str], payload: dict[str, object], timeout: int) -> dict[str, object]:
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["payload"] = payload
+            captured["timeout"] = timeout
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "test-reply"
+                        }
+                    }
+                ]
+            }
+
+        provider = MiniMaxProvider(api_key="demo-key", transport=fake_transport)
+        reply = provider.complete(
+            system_prompt="you are an assistant",
+            user_prompt="hello",
+            model="MiniMax-M2.5",
+        )
+
+        self.assertEqual(reply, "test-reply")
+        self.assertEqual(captured["url"], "https://api.minimaxi.com/v1/text/chatcompletion_v2")
+        self.assertEqual(captured["timeout"], 30)
+        payload = captured["payload"]
+        assert isinstance(payload, dict)
+        self.assertEqual(payload["model"], "MiniMax-M2.5")
+        self.assertEqual(payload["messages"][0]["role"], "system")
+        self.assertEqual(payload["messages"][1]["content"], "hello")
+
+    def test_reply_engine_uses_scene_specific_prompts_and_context(self) -> None:
+        calls: list[dict[str, str]] = []
+
+        class FakeProvider:
+            def complete(self, system_prompt: str, user_prompt: str, model: str | None = None) -> str:
+                calls.append(
+                    {
+                        "system_prompt": system_prompt,
+                        "user_prompt": user_prompt,
+                        "model": model or "",
+                    }
+                )
+                return "model-output"
+
+        engine = ReplyEngine(
+            provider=FakeProvider(),
+            prompts=ScenePrompts(
+                friend_system_prompt="friend-prompt",
+                group_system_prompt="group-prompt",
+            ),
+            context_limit=10,
+            model="MiniMax-M2.5",
+        )
+
+        reply = engine.generate_friend_reply(
+            latest_message="are you busy",
+            contexts=["hello", "are you there", "are you busy"],
+        )
+        self.assertEqual(reply, "model-output")
+        self.assertEqual(calls[0]["system_prompt"], "friend-prompt")
+        self.assertIn("are you busy", calls[0]["user_prompt"])
+        self.assertIn("hello", calls[0]["user_prompt"])
+
+        engine.generate_group_reply(
+            latest_message="@me help me check this",
+            contexts=["group context", "@me help me check this"],
+        )
+        self.assertEqual(calls[1]["system_prompt"], "group-prompt")
+        self.assertIn("@me help me check this", calls[1]["user_prompt"])
+
+
+class GlobalAutoReplyTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.runtime = import_wechat_runtime_with_stubs()
+
+    def build_app(self):
+        return self.runtime.WeChatAIApp(
+            engine=types.SimpleNamespace(
+                context_limit=10,
+                generate_friend_reply=lambda latest_message, contexts: f"reply:{latest_message}",
+                generate_group_reply=lambda latest_message, contexts: f"group:{latest_message}",
+            ),
+            fallback_reply="fallback",
+            mention_names=("me",),
+        )
+
+    def test_process_unread_session_replies_to_direct_messages(self) -> None:
+        sent_messages: list[tuple[str, list[str]]] = []
+        opened_chats: list[str] = []
+
+        self.runtime.Navigator = types.SimpleNamespace(
+            open_dialog_window=lambda friend, is_maximize=False, search_pages=5: opened_chats.append(friend) or {"friend": friend}
+        )
+        self.runtime.Tools = types.SimpleNamespace(is_group_chat=lambda window: False)
+        self.runtime.Messages = types.SimpleNamespace(
+            pull_messages=lambda friend, number, close_weixin=False, search_pages=5: ["earlier-context"],
+            send_messages_to_friend=lambda friend, messages, close_weixin=False: sent_messages.append((friend, messages))
+        )
+
+        app = self.build_app()
+        result = app.process_unread_session("Alice", ["hello", "there"])
+
+        self.assertEqual(result["friend_replies"], 2)
+        self.assertEqual(opened_chats, ["Alice"])
+        self.assertEqual(sent_messages, [("Alice", ["reply:hello"]), ("Alice", ["reply:there"])])
+
+    def test_process_unread_session_ignores_group_messages_without_mention(self) -> None:
+        sent_messages: list[tuple[str, list[str]]] = []
+
+        self.runtime.Navigator = types.SimpleNamespace(
+            open_dialog_window=lambda friend, is_maximize=False, search_pages=5: {"friend": friend}
+        )
+        self.runtime.Tools = types.SimpleNamespace(is_group_chat=lambda window: True)
+        self.runtime.Messages = types.SimpleNamespace(
+            pull_messages=lambda friend, number, close_weixin=False, search_pages=5: ["earlier-group-context"],
+            send_messages_to_friend=lambda friend, messages, close_weixin=False: sent_messages.append((friend, messages))
+        )
+
+        app = self.build_app()
+        result = app.process_unread_session("Group", ["hello everyone", "please reply"])
+
+        self.assertEqual(result["group_replies"], 0)
+        self.assertEqual(sent_messages, [])
+
+    def test_process_unread_session_replies_to_group_mentions(self) -> None:
+        sent_messages: list[tuple[str, list[str]]] = []
+
+        self.runtime.Navigator = types.SimpleNamespace(
+            open_dialog_window=lambda friend, is_maximize=False, search_pages=5: {"friend": friend}
+        )
+        self.runtime.Tools = types.SimpleNamespace(is_group_chat=lambda window: True)
+        self.runtime.Messages = types.SimpleNamespace(
+            pull_messages=lambda friend, number, close_weixin=False, search_pages=5: ["earlier-group-context"],
+            send_messages_to_friend=lambda friend, messages, close_weixin=False: sent_messages.append((friend, messages))
+        )
+
+        app = self.build_app()
+        result = app.process_unread_session("Group", ["@me help me", "@所有人 meeting"])
+
+        self.assertEqual(result["group_replies"], 2)
+        self.assertEqual(
+            sent_messages,
+            [("Group", ["group:@me help me"]), ("Group", ["group:@所有人 meeting"])],
+        )
+
+    def _build_fake_active_chat(self, initial_messages: list[tuple[str, int, bool]]):
+        class FakeElementInfo:
+            def __init__(self, runtime_id: int) -> None:
+                self.runtime_id = runtime_id
+
+        class FakeItem:
+            def __init__(self, text: str, runtime_id: int, mine: bool) -> None:
+                self._text = text
+                self.element_info = FakeElementInfo(runtime_id)
+                self.mine = mine
+
+            def window_text(self) -> str:
+                return self._text
+
+            def class_name(self) -> str:
+                return "mmui::ChatTextItemView"
+
+        class FakeControl:
+            def __init__(self, text: str = "", items: list[FakeItem] | None = None) -> None:
+                self._text = text
+                self._items = items or []
+
+            def exists(self, timeout=0.1) -> bool:
+                return True
+
+            def window_text(self) -> str:
+                return self._text
+
+            def children(self, control_type=None):
+                return self._items
+
+        class FakeMainWindow:
+            def __init__(self, messages: list[tuple[str, int, bool]]) -> None:
+                self.chat_label = FakeControl(text="Alice")
+                self.chat_list = FakeControl(items=[FakeItem(text, runtime_id, mine) for text, runtime_id, mine in messages])
+
+            def child_window(self, **kwargs):
+                if kwargs.get("_kind") == "CurrentChatText":
+                    return self.chat_label
+                if kwargs.get("_kind") == "FriendChatList":
+                    return self.chat_list
+                raise AssertionError(f"unexpected child_window lookup: {kwargs}")
+
+        return FakeMainWindow(initial_messages)
+
+    def test_process_active_chat_session_bootstraps_existing_messages_without_reply(self) -> None:
+        sent_messages: list[tuple[str, list[str]]] = []
+        fake_main_window = self._build_fake_active_chat([("old-message", 1, False)])
+        self.runtime.Navigator = types.SimpleNamespace(open_weixin=lambda is_maximize=False: fake_main_window)
+        self.runtime.Tools = types.SimpleNamespace(
+            activate_chatList=lambda chat_list: None,
+            is_group_chat=lambda window: False,
+            is_my_bubble=lambda window, item: item.mine,
+        )
+        self.runtime.Messages = types.SimpleNamespace(
+            send_messages_to_friend=lambda friend, messages, close_weixin=False: sent_messages.append((friend, messages))
+        )
+
+        app = self.build_app()
+        app.active_merge_window = 3.0
+        result = app.process_active_chat_session(now=0.0)
+
+        self.assertEqual(result["friend_replies"], 0)
+        self.assertEqual(app.active_pending_messages, [])
+        self.assertIn("Alice", app.active_last_seen_signature_by_session)
+        self.assertEqual(sent_messages, [])
+
+    def test_process_active_chat_session_merges_only_messages_arriving_after_bootstrap(self) -> None:
+        sent_messages: list[tuple[str, list[str]]] = []
+        fake_main_window = self._build_fake_active_chat([("old-message", 1, False)])
+        self.runtime.Navigator = types.SimpleNamespace(open_weixin=lambda is_maximize=False: fake_main_window)
+        self.runtime.Tools = types.SimpleNamespace(
+            activate_chatList=lambda chat_list: None,
+            is_group_chat=lambda window: False,
+            is_my_bubble=lambda window, item: item.mine,
+        )
+        self.runtime.Messages = types.SimpleNamespace(
+            send_messages_to_friend=lambda friend, messages, close_weixin=False: sent_messages.append((friend, messages))
+        )
+
+        app = self.build_app()
+        app.active_merge_window = 3.0
+
+        app.process_active_chat_session(now=0.0)
+        fake_main_window.chat_list = self._build_fake_active_chat([("old-message", 1, False), ("new-message", 2, False)]).chat_list
+        app.process_active_chat_session(now=1.0)
+        result = app.process_active_chat_session(now=4.5)
+
+        self.assertEqual(result["friend_replies"], 1)
+        self.assertEqual(sent_messages, [("Alice", ["reply:new-message"])])
+        self.assertEqual(app.active_pending_messages, [])
+
+    def test_run_global_auto_reply_polls_and_aggregates_results(self) -> None:
+        poll_results = [
+            {"Alice": ["hello"], "Group": ["hi all"]},
+            {"Group": ["@me help"]},
+            {},
+        ]
+
+        class FakeMessages:
+            def __init__(self, results: list[dict[str, list[str]]]) -> None:
+                self.results = results
+                self.calls = 0
+
+            def check_new_messages(self, close_weixin=False):
+                index = min(self.calls, len(self.results) - 1)
+                self.calls += 1
+                return self.results[index]
+
+        self.runtime.Messages = FakeMessages(poll_results)
+        self.runtime.Tools = types.SimpleNamespace(match_duration=lambda duration: 2)
+        self.runtime.time = types.SimpleNamespace(
+            sleep=lambda seconds: None,
+            time=iter([0.0, 0.0, 0.4, 0.8, 1.2, 1.6, 1.9, 2.1, 2.1]).__next__,
+        )
+
+        app = self.build_app()
+
+        def fake_unread(self, session_name: str, unread_messages: list[str]) -> dict[str, int]:
+            if session_name == "Alice":
+                return {"friend_replies": 1, "group_replies": 0, "errors": 0}
+            if unread_messages == ["hi all"]:
+                return {"friend_replies": 0, "group_replies": 0, "errors": 0}
+            return {"friend_replies": 0, "group_replies": 1, "errors": 0}
+
+        original_unread = self.runtime.WeChatAIApp.process_unread_session
+        original_active = self.runtime.WeChatAIApp.process_active_chat_session
+        self.runtime.WeChatAIApp.process_unread_session = fake_unread
+        self.runtime.WeChatAIApp.process_active_chat_session = lambda self, now=None: {"friend_replies": 0, "group_replies": 0, "errors": 0}
+        try:
+            result = app.run_global_auto_reply(duration="2s", poll_interval=0.5)
+        finally:
+            self.runtime.WeChatAIApp.process_unread_session = original_unread
+            self.runtime.WeChatAIApp.process_active_chat_session = original_active
+
+        self.assertEqual(result["polls"], 2)
+        self.assertEqual(result["friend_replies"], 1)
+        self.assertEqual(result["group_replies"], 1)
+        self.assertEqual(result["errors"], 0)
+
+
+if __name__ == "__main__":
+    suite = unittest.TestSuite()
+    suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(ReplyEngineTests))
+    suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(GlobalAutoReplyTests))
+    result = unittest.TextTestRunner(verbosity=2).run(suite)
+    print(json.dumps({"ok": result.wasSuccessful()}, ensure_ascii=False))
+    raise SystemExit(0 if result.wasSuccessful() else 1)
