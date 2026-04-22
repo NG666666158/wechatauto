@@ -20,10 +20,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run MiniMax-powered auto reply for a single friend.")
     parser.add_argument("--friend", required=True, help="Friend remark/name in WeChat")
     parser.add_argument("--duration", default="5min", help="Listen duration, e.g. 30s / 5min / 1h")
+    parser.add_argument("--debug", action="store_true", help="Print runtime debug logs")
     parser.add_argument("--window-minimize", action="store_true", help="Minimize the separate dialog window")
     args = parser.parse_args()
 
     app = WeChatAIApp.from_env()
+    app.debug = args.debug
     result = app.run_friend_auto_reply(
         friend=args.friend,
         duration=args.duration,

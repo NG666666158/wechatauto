@@ -6,6 +6,7 @@ import sys
 import types
 import unittest
 from pathlib import Path
+from uuid import uuid4
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +14,8 @@ sys.path.insert(0, str(ROOT))
 
 
 from wechat_ai.context import build_context_window  # type: ignore  # noqa: E402
+from wechat_ai.logging_utils import JsonlEventLogger, tail_jsonl_events  # type: ignore  # noqa: E402
+from wechat_ai.memory.memory_store import MemoryStore  # type: ignore  # noqa: E402
 from wechat_ai.minimax_provider import MiniMaxProvider  # type: ignore  # noqa: E402
 from wechat_ai.reply_engine import ReplyEngine, ScenePrompts  # type: ignore  # noqa: E402
 
@@ -143,6 +146,86 @@ class ReplyEngineTests(unittest.TestCase):
         self.assertIn("@me help me check this", calls[1]["user_prompt"])
 
 
+class LoggingAndMemoryTests(unittest.TestCase):
+    def test_jsonl_event_logger_writes_one_line_per_event(self) -> None:
+        temp_dir = ROOT / ".tmp_observability_unit_logs" / str(uuid4())
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        log_path = temp_dir / "runtime.jsonl"
+        logger = JsonlEventLogger(path=log_path)
+
+        logger.log_event("message_received", chat_id="alice", chat_type="friend")
+        logger.log_event("message_sent", chat_id="alice", chat_type="friend", reply_preview="ok")
+
+        lines = log_path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 2)
+        first = json.loads(lines[0])
+        second = json.loads(lines[1])
+        self.assertEqual(first["event_type"], "message_received")
+        self.assertEqual(second["event_type"], "message_sent")
+        self.assertTrue(first["timestamp"].endswith("Z"))
+        self.assertEqual(len(tail_jsonl_events(limit=1, path=log_path)), 1)
+
+    def test_jsonl_event_logger_redacts_sensitive_values_and_rotates(self) -> None:
+        temp_dir = ROOT / ".tmp_observability_unit_logs" / str(uuid4())
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        log_path = temp_dir / "runtime.jsonl"
+        logger = JsonlEventLogger(path=log_path, max_bytes=120, backup_count=2)
+
+        logger.log_event("prompt_built", prompt_preview="api_key=super-secret-token")
+        logger.log_event("prompt_built", prompt_preview="Bearer abcdefghijklmnopqrstuvwxyz")
+        logger.log_event("message_sent", reply_preview="token=my-token-value")
+
+        current_text = log_path.read_text(encoding="utf-8")
+        self.assertIn("[redacted]", current_text)
+        self.assertNotIn("super-secret-token", current_text)
+        self.assertNotIn("my-token-value", current_text)
+        self.assertTrue((temp_dir / "runtime.jsonl.1").exists())
+
+    def test_memory_store_create_load_and_update_flows(self) -> None:
+        temp_dir = ROOT / ".tmp_observability_unit_memory" / str(uuid4())
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        store = MemoryStore(base_dir=temp_dir)
+
+        empty = store.load("friend demo")
+        self.assertEqual(empty.chat_id, "friend demo")
+        self.assertEqual(empty.summary_text, "")
+        self.assertEqual(empty.recent_conversation, [])
+
+        updated = store.update_summary("friend demo", "Prefers short status updates.")
+        self.assertEqual(updated.summary_text, "Prefers short status updates.")
+        store.append_snapshot("friend demo", ["hi", "are you there?"], captured_at="2026-04-22T10:00:00Z")
+
+        loaded = store.load("friend demo")
+        self.assertEqual(loaded.summary_text, "Prefers short status updates.")
+        self.assertEqual(len(loaded.recent_conversation), 1)
+        self.assertEqual(loaded.recent_conversation[0].messages, ["hi", "are you there?"])
+        self.assertEqual(loaded.recent_conversation[0].captured_at, "2026-04-22T10:00:00Z")
+
+    def test_memory_store_truncates_redacts_and_limits_snapshots(self) -> None:
+        temp_dir = ROOT / ".tmp_observability_unit_memory" / str(uuid4())
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        store = MemoryStore(
+            base_dir=temp_dir,
+            max_snapshots=2,
+            max_messages_per_snapshot=2,
+            max_chars_per_message=24,
+            max_summary_chars=32,
+        )
+
+        store.update_summary("friend demo", "api_key=super-secret-value and a very long summary that should be shortened")
+        store.append_snapshot("friend demo", ["one", "two", "three token=abcdef"])
+        store.append_snapshot("friend demo", ["four", "five"])
+        store.append_snapshot("friend demo", ["six", "seven"])
+
+        loaded = store.load("friend demo")
+        self.assertIn("[redacted]", loaded.summary_text)
+        self.assertNotIn("super-secret-value", loaded.summary_text)
+        self.assertLessEqual(len(loaded.summary_text), 32 + len("...(truncated)"))
+        self.assertEqual(len(loaded.recent_conversation), 2)
+        self.assertEqual(loaded.recent_conversation[0].messages, ["four", "five"])
+        self.assertEqual(loaded.recent_conversation[1].messages, ["six", "seven"])
+
+
 class GlobalAutoReplyTests(unittest.TestCase):
     def setUp(self) -> None:
         self.runtime = import_wechat_runtime_with_stubs()
@@ -158,12 +241,13 @@ class GlobalAutoReplyTests(unittest.TestCase):
             mention_names=("me",),
         )
 
-    def test_process_unread_session_replies_to_direct_messages(self) -> None:
+    def test_process_unread_session_merges_direct_messages_into_one_reply(self) -> None:
         sent_messages: list[tuple[str, list[str]]] = []
         opened_chats: list[str] = []
+        fake_main_window = self._build_fake_active_chat([("hello", 1, False), ("there", 2, False)])
 
         self.runtime.Navigator = types.SimpleNamespace(
-            open_dialog_window=lambda friend, is_maximize=False, search_pages=5: opened_chats.append(friend) or {"friend": friend}
+            open_dialog_window=lambda friend, is_maximize=False, search_pages=5: opened_chats.append(friend) or fake_main_window
         )
         self.runtime.Tools = types.SimpleNamespace(is_group_chat=lambda window: False)
         self.runtime.Messages = types.SimpleNamespace(
@@ -174,9 +258,10 @@ class GlobalAutoReplyTests(unittest.TestCase):
         app = self.build_app()
         result = app.process_unread_session("Alice", ["hello", "there"])
 
-        self.assertEqual(result["friend_replies"], 2)
+        self.assertEqual(result["friend_replies"], 1)
         self.assertEqual(opened_chats, ["Alice"])
-        self.assertEqual(sent_messages, [("Alice", ["reply:hello"]), ("Alice", ["reply:there"])])
+        self.assertEqual(sent_messages, [("Alice", ["reply:hello\nthere"])])
+        self.assertIn("Alice", app.active_last_seen_signature_by_session)
 
     def test_process_unread_session_ignores_group_messages_without_mention(self) -> None:
         sent_messages: list[tuple[str, list[str]]] = []
@@ -198,9 +283,10 @@ class GlobalAutoReplyTests(unittest.TestCase):
 
     def test_process_unread_session_replies_to_group_mentions(self) -> None:
         sent_messages: list[tuple[str, list[str]]] = []
+        fake_main_window = self._build_fake_active_chat([("@me help me", 1, False), ("@鎵€鏈變汉 meeting", 2, False)])
 
         self.runtime.Navigator = types.SimpleNamespace(
-            open_dialog_window=lambda friend, is_maximize=False, search_pages=5: {"friend": friend}
+            open_dialog_window=lambda friend, is_maximize=False, search_pages=5: fake_main_window
         )
         self.runtime.Tools = types.SimpleNamespace(is_group_chat=lambda window: True)
         self.runtime.Messages = types.SimpleNamespace(
@@ -211,10 +297,45 @@ class GlobalAutoReplyTests(unittest.TestCase):
         app = self.build_app()
         result = app.process_unread_session("Group", ["@me help me", "@所有人 meeting"])
 
-        self.assertEqual(result["group_replies"], 2)
+        self.assertEqual(result["group_replies"], 1)
+        self.assertEqual(sent_messages, [("Group", ["group:@me help me\n@所有人 meeting"])])
+
+    def test_process_unread_session_keeps_follow_up_messages_detectable_in_active_chat(self) -> None:
+        sent_messages: list[tuple[str, list[str]]] = []
+        fake_main_window = self._build_fake_active_chat([("hello", 1, False), ("there", 2, False)])
+        self.runtime.Navigator = types.SimpleNamespace(
+            open_dialog_window=lambda friend, is_maximize=False, search_pages=5: fake_main_window,
+            open_weixin=lambda is_maximize=False: fake_main_window,
+        )
+        self.runtime.Tools = types.SimpleNamespace(
+            is_group_chat=lambda window: False,
+            activate_chatList=lambda chat_list: None,
+            is_my_bubble=lambda window, item: item.mine,
+        )
+        self.runtime.Messages = types.SimpleNamespace(
+            pull_messages=lambda friend, number, close_weixin=False, search_pages=5: ["earlier-context"],
+            send_messages_to_friend=lambda friend, messages, close_weixin=False: sent_messages.append((friend, messages)),
+        )
+
+        app = self.build_app()
+        app.active_merge_window = 3.0
+
+        result = app.process_unread_session("Alice", ["hello", "there"])
+
+        self.assertEqual(result["friend_replies"], 1)
+        self.assertEqual(sent_messages, [("Alice", ["reply:hello\nthere"])])
+
+        fake_main_window.chat_list = self._build_fake_active_chat(
+            [("hello", 1, False), ("there", 2, False), ("reply:hello\nthere", 3, True), ("follow-up", 4, False)]
+        ).chat_list
+
+        app.process_active_chat_session(now=1.0)
+        follow_up_result = app.process_active_chat_session(now=4.5)
+
+        self.assertEqual(follow_up_result["friend_replies"], 1)
         self.assertEqual(
             sent_messages,
-            [("Group", ["group:@me help me"]), ("Group", ["group:@所有人 meeting"])],
+            [("Alice", ["reply:hello\nthere"]), ("Alice", ["reply:follow-up"])],
         )
 
     def _build_fake_active_chat(self, initial_messages: list[tuple[str, int, bool]]):
@@ -361,6 +482,7 @@ class GlobalAutoReplyTests(unittest.TestCase):
 if __name__ == "__main__":
     suite = unittest.TestSuite()
     suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(ReplyEngineTests))
+    suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(LoggingAndMemoryTests))
     suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(GlobalAutoReplyTests))
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     print(json.dumps({"ok": result.wasSuccessful()}, ensure_ascii=False))

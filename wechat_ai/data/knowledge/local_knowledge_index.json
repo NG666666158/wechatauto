@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "knowledge_dir": "C:\\github\\pywechat\\pywechat-main\\pywechat-main\\wechat_ai\\data\\knowledge",
+  "embedding_provider": "FakeEmbeddings",
+  "chunk_size": 1000,
+  "overlap": 200,
+  "documents_loaded": 0,
+  "chunks_created": 0,
+  "chunks": []
+}

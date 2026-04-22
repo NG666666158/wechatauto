@@ -20,9 +20,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run MiniMax-powered group @ auto reply.")
     parser.add_argument("--group", required=True, help="Group remark/name in WeChat")
     parser.add_argument("--duration", default="5min", help="Listen duration, e.g. 30s / 5min / 1h")
+    parser.add_argument("--debug", action="store_true", help="Print runtime debug logs")
     args = parser.parse_args()
 
     app = WeChatAIApp.from_env()
+    app.debug = args.debug
     result = app.run_group_at_auto_reply(
         group_name=args.group,
         duration=args.duration,
