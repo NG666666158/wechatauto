@@ -51,6 +51,7 @@ class FakeDaemonRunner:
         self.stopped: list[int] = []
         self.running_pids: set[int] = set()
         self.next_pid = 4321
+        self.stop_events: list[object] = []
 
     def launch(
         self,
@@ -59,6 +60,7 @@ class FakeDaemonRunner:
         poll_interval: float = 1.0,
         heartbeat_interval: float = 60.0,
         error_backoff_seconds: float = 5.0,
+        stop_event: object | None = None,
     ) -> int:
         pid = self.next_pid
         self.next_pid += 1
@@ -70,8 +72,11 @@ class FakeDaemonRunner:
                 "poll_interval": poll_interval,
                 "heartbeat_interval": heartbeat_interval,
                 "error_backoff_seconds": error_backoff_seconds,
+                "stop_event": stop_event,
             }
         )
+        if stop_event is not None:
+            self.stop_events.append(stop_event)
         return pid
 
     def stop(self, pid: int) -> bool:
@@ -96,6 +101,64 @@ class FakeWebKnowledgeBuilder:
         }
         self.calls.append(payload)
         return payload
+
+
+class FakeReplyPipeline:
+    def __init__(self) -> None:
+        self.messages: list[object] = []
+
+    def generate_reply(self, message: object) -> str:
+        self.messages.append(message)
+        return f"建议:{getattr(message, 'text')}"
+
+
+class FakeReplySender:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.sent: list[dict[str, object]] = []
+
+    def send_reply(self, *, conversation_id: str, text: str, is_group: bool = False) -> dict[str, object]:
+        self.sent.append({"conversation_id": conversation_id, "text": text, "is_group": is_group})
+        if self.fail:
+            raise RuntimeError("wechat send failed")
+        return {"sent": True, "message_id": "sent_001"}
+
+
+class FakeSendConfirmer:
+    def __init__(self, *, confirmed: bool = True, fail: bool = False) -> None:
+        self.confirmed = confirmed
+        self.fail = fail
+        self.calls: list[dict[str, object]] = []
+
+    def confirm_sent(
+        self,
+        *,
+        conversation_id: str,
+        text: str,
+        is_group: bool = False,
+        send_result: dict[str, object] | None = None,
+    ) -> bool:
+        self.calls.append(
+            {
+                "conversation_id": conversation_id,
+                "text": text,
+                "is_group": is_group,
+                "send_result": send_result,
+            }
+        )
+        if self.fail:
+            raise RuntimeError("confirmation timed out")
+        return self.confirmed
+
+
+class FakeWindowProbe:
+    def __init__(self, result: dict[str, object]) -> None:
+        self.result = result
+        self.calls = 0
+
+    def probe_ui_ready(self):
+        self.calls += 1
+        return self.result
 
 
 class DesktopSettingsStoreTests(TestCase):
@@ -228,9 +291,175 @@ class DesktopAppServiceTests(TestCase):
             result = service.send_reply("friend:alice", "你好")
             self.assertEqual(result["status"], "not_implemented")
             self.assertEqual(result["action"], "send_reply")
-            suggestion = service.suggest_reply("friend:alice", "请发一下报价")
-            self.assertEqual(suggestion.status, "not_implemented")
-            self.assertIn("建议回复占位", suggestion.suggestion)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_conversation_store_and_suggestion_pipeline_are_available(self) -> None:
+        from wechat_ai.app.service import DesktopAppService
+
+        temp_dir = _fresh_dir(".tmp_app_service_conversations")
+        try:
+            pipeline = FakeReplyPipeline()
+            service = DesktopAppService(data_root=temp_dir, reply_pipeline=pipeline)
+            service.record_conversation_message(
+                "friend:alice",
+                sender="Alice",
+                text="请问支持试用吗？",
+                direction="incoming",
+            )
+            service.record_conversation_message(
+                "friend:alice",
+                sender="assistant",
+                text="支持 7 天试用。",
+                direction="outgoing",
+            )
+
+            conversations = service.list_conversations()
+            detail = service.get_conversation("friend:alice")
+            suggestion = service.suggest_reply("friend:alice", "请问支持试用吗？")
+
+            self.assertEqual(conversations[0].conversation_id, "friend:alice")
+            self.assertEqual(conversations[0].latest_message, "支持 7 天试用。")
+            self.assertEqual(detail["conversation"]["title"], "Alice")
+            self.assertEqual(len(detail["messages"]), 2)
+            self.assertEqual(suggestion.status, "ready")
+            self.assertEqual(suggestion.suggestion, "建议:请问支持试用吗？")
+            self.assertEqual(getattr(pipeline.messages[0], "conversation_id"), "friend:alice")
+            self.assertEqual(getattr(pipeline.messages[0], "chat_type"), "friend")
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_send_reply_preflight_blocks_unsafe_conversation_states(self) -> None:
+        from wechat_ai.app.service import DesktopAppService
+
+        temp_dir = _fresh_dir(".tmp_app_service_send_preflight")
+        try:
+            service = DesktopAppService(data_root=temp_dir)
+
+            empty = service.send_reply("friend:alice", "   ")
+            self.assertEqual(empty["status"], "blocked")
+            self.assertEqual(empty["reason_code"], "EMPTY_TEXT")
+
+            service.update_conversation_control("friend:alice", {"human_takeover": True})
+            takeover = service.send_reply("friend:alice", "你好")
+            self.assertEqual(takeover["status"], "blocked")
+            self.assertEqual(takeover["reason_code"], "HUMAN_TAKEOVER")
+
+            service.update_conversation_control("friend:alice", {"human_takeover": False, "paused": True})
+            paused = service.send_reply("friend:alice", "你好")
+            self.assertEqual(paused["reason_code"], "CONVERSATION_PAUSED")
+
+            service.update_conversation_control("friend:alice", {"paused": False, "blacklisted": True})
+            blacklisted = service.send_reply("friend:alice", "你好")
+            self.assertEqual(blacklisted["reason_code"], "BLACKLISTED")
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_send_reply_preflight_passes_before_real_sender_is_connected(self) -> None:
+        from wechat_ai.app.service import DesktopAppService
+
+        temp_dir = _fresh_dir(".tmp_app_service_send_preflight_allowed")
+        try:
+            service = DesktopAppService(data_root=temp_dir)
+            service.record_conversation_message("friend:alice", sender="Alice", text="你好", direction="incoming")
+
+            result = service.send_reply("friend:alice", "您好，支持试用。")
+
+            self.assertEqual(result["status"], "not_implemented")
+            self.assertTrue(result["allowed"])
+            self.assertEqual(result["conversation_id"], "friend:alice")
+            self.assertEqual(result["text"], "您好，支持试用。")
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_send_reply_calls_sender_and_records_outgoing_message(self) -> None:
+        from wechat_ai.app.service import DesktopAppService
+
+        temp_dir = _fresh_dir(".tmp_app_service_send_real")
+        try:
+            sender = FakeReplySender()
+            service = DesktopAppService(data_root=temp_dir, reply_sender=sender)
+            service.record_conversation_message("friend:alice", sender="Alice", text="你好", direction="incoming")
+
+            result = service.send_reply("friend:alice", "您好，支持试用。")
+            detail = service.get_conversation("friend:alice")
+
+            self.assertEqual(result["status"], "sent")
+            self.assertTrue(result["allowed"])
+            self.assertEqual(sender.sent, [{"conversation_id": "friend:alice", "text": "您好，支持试用。", "is_group": False}])
+            self.assertEqual(detail["messages"][-1]["direction"], "outgoing")
+            self.assertEqual(detail["messages"][-1]["text"], "您好，支持试用。")
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_send_reply_confirms_sent_message_before_recording_outgoing_message(self) -> None:
+        from wechat_ai.app.service import DesktopAppService
+
+        temp_dir = _fresh_dir(".tmp_app_service_send_confirmed")
+        try:
+            sender = FakeReplySender()
+            confirmer = FakeSendConfirmer()
+            service = DesktopAppService(data_root=temp_dir, reply_sender=sender, send_confirmer=confirmer)
+            service.record_conversation_message("group:support", sender="Support", text="hello", direction="incoming")
+
+            result = service.send_reply("group:support", " confirmed reply ")
+            detail = service.get_conversation("group:support")
+
+            self.assertEqual(result["status"], "sent")
+            self.assertTrue(result["confirmed"])
+            self.assertEqual(result["send_result"], {"sent": True, "message_id": "sent_001"})
+            self.assertEqual(
+                confirmer.calls,
+                [
+                    {
+                        "conversation_id": "group:support",
+                        "text": "confirmed reply",
+                        "is_group": True,
+                        "send_result": {"sent": True, "message_id": "sent_001"},
+                    }
+                ],
+            )
+            self.assertEqual(detail["messages"][-1]["direction"], "outgoing")
+            self.assertEqual(detail["messages"][-1]["text"], "confirmed reply")
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_send_reply_reports_unconfirmed_without_recording_outgoing_message(self) -> None:
+        from wechat_ai.app.service import DesktopAppService
+
+        temp_dir = _fresh_dir(".tmp_app_service_send_unconfirmed")
+        try:
+            sender = FakeReplySender()
+            confirmer = FakeSendConfirmer(confirmed=False)
+            service = DesktopAppService(data_root=temp_dir, reply_sender=sender, send_confirmer=confirmer)
+            service.record_conversation_message("friend:alice", sender="Alice", text="hello", direction="incoming")
+
+            result = service.send_reply("friend:alice", "not visible yet")
+            detail = service.get_conversation("friend:alice")
+
+            self.assertEqual(result["status"], "unconfirmed")
+            self.assertFalse(result["confirmed"])
+            self.assertEqual(result["reason_code"], "SEND_NOT_CONFIRMED")
+            self.assertEqual(result["send_result"], {"sent": True, "message_id": "sent_001"})
+            self.assertEqual(len(detail["messages"]), 1)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_send_reply_reports_sender_failure_without_recording_outgoing_message(self) -> None:
+        from wechat_ai.app.service import DesktopAppService
+
+        temp_dir = _fresh_dir(".tmp_app_service_send_failure")
+        try:
+            service = DesktopAppService(data_root=temp_dir, reply_sender=FakeReplySender(fail=True))
+            service.record_conversation_message("friend:alice", sender="Alice", text="你好", direction="incoming")
+
+            result = service.send_reply("friend:alice", "您好")
+            detail = service.get_conversation("friend:alice")
+
+            self.assertEqual(result["status"], "failed")
+            self.assertFalse(result["sent"])
+            self.assertEqual(result["reason_code"], "SEND_FAILED")
+            self.assertEqual(len(detail["messages"]), 1)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -288,6 +517,27 @@ class DesktopAppServiceTests(TestCase):
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+    def test_stop_daemon_sets_stop_event_before_stopping_runner(self) -> None:
+        from wechat_ai.app.service import DesktopAppService
+
+        temp_dir = _fresh_dir(".tmp_app_service_stop_event")
+        try:
+            runner = FakeDaemonRunner()
+            service = DesktopAppService(data_root=temp_dir, daemon_runner=runner)
+            service.start_daemon()
+
+            self.assertEqual(len(runner.stop_events), 1)
+            stop_event = runner.stop_events[0]
+            self.assertFalse(stop_event.is_set())
+
+            stopped = service.stop_daemon()
+
+            self.assertTrue(stop_event.is_set())
+            self.assertEqual(stopped["state"], "stopped")
+            self.assertEqual(runner.stopped, [4321])
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def test_get_daemon_status_normalizes_dead_process(self) -> None:
         from wechat_ai.app.service import DesktopAppService
 
@@ -332,6 +582,95 @@ class DesktopAppServiceTests(TestCase):
             self.assertEqual(len(results), 1)
             self.assertIn("退款说明", results[0]["text"])
             self.assertIn("metadata", results[0])
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_recent_logs_privacy_policy_and_environment_are_available(self) -> None:
+        from wechat_ai.app.service import DesktopAppService
+
+        temp_dir = _fresh_dir(".tmp_app_service_ops")
+        try:
+            service = DesktopAppService(data_root=temp_dir)
+            service.runtime_log_path.write_text(
+                '{"event_type":"heartbeat","message":"api_key=secret-value"}\n',
+                encoding="utf-8",
+            )
+
+            logs = service.get_recent_logs(limit=5)
+            privacy = service.get_privacy_policy()
+            updated = service.update_privacy_policy({"log_retention_days": 7})
+            environment = service.get_wechat_environment_status()
+
+            self.assertEqual(logs[0]["event_type"], "heartbeat")
+            self.assertIn("[redacted]", logs[0]["message"])
+            self.assertTrue(privacy["redact_sensitive_logs"])
+            self.assertEqual(updated["log_retention_days"], 7)
+            self.assertIn("wechat_running", environment)
+            self.assertIn("ui_ready", environment)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_environment_status_includes_read_only_wechat_window_probe(self) -> None:
+        from wechat_ai.app.service import DesktopAppService
+
+        temp_dir = _fresh_dir(".tmp_app_service_ui_probe")
+        try:
+            probe = FakeWindowProbe(
+                {
+                    "ready": True,
+                    "status": "ok",
+                    "current_chat": "张先生",
+                    "visible_message_count": 3,
+                    "latest_visible_text": "最新消息",
+                }
+            )
+            service = DesktopAppService(data_root=temp_dir, wechat_window_probe=probe)
+
+            environment = service.get_wechat_environment_status()
+
+            self.assertEqual(environment["ui_ready"], True)
+            self.assertEqual(environment["ui_probe"]["current_chat"], "张先生")
+            self.assertEqual(environment["ui_probe"]["visible_message_count"], 3)
+            self.assertEqual(probe.calls, 1)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_conversation_control_and_retention_policy_are_available(self) -> None:
+        from wechat_ai.app.service import DesktopAppService
+
+        temp_dir = _fresh_dir(".tmp_app_service_controls")
+        try:
+            service = DesktopAppService(data_root=temp_dir)
+            control = service.update_conversation_control(
+                "user_001",
+                {
+                    "human_takeover": True,
+                    "paused": True,
+                    "blacklisted": True,
+                },
+            )
+            settings = service.get_settings()
+            service.runtime_log_path.write_text(
+                "\n".join(
+                    [
+                        '{"timestamp":"2000-01-01T00:00:00Z","event_type":"old"}',
+                        '{"timestamp":"2999-01-01T00:00:00Z","event_type":"new"}',
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cleanup = service.apply_retention_policy()
+            logs = service.get_recent_logs(limit=10)
+
+            self.assertTrue(control["human_takeover"])
+            self.assertTrue(control["paused"])
+            self.assertTrue(control["blacklisted"])
+            self.assertIn("user_001", settings.human_takeover_sessions)
+            self.assertIn("user_001", settings.paused_sessions)
+            self.assertIn("user_001", settings.blacklist)
+            self.assertGreaterEqual(cleanup["logs_removed"], 1)
+            self.assertEqual([event["event_type"] for event in logs], ["new"])
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 

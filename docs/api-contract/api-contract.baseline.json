@@ -1,0 +1,578 @@
+{
+  "api_title": "WeChat AI Local API",
+  "api_version": "0.1.0",
+  "base_path": "/api/v1",
+  "contract_version": "p4-baseline-v1",
+  "endpoint_count": 32,
+  "endpoints": [
+    {
+      "id": "get_api_v1_controls_conversations_conversation_id",
+      "method": "GET",
+      "path": "/api/v1/controls/conversations/{conversation_id}",
+      "request_schema": "",
+      "response_codes": [
+        "200",
+        "422"
+      ],
+      "response_schema": "ApiResponse_ConversationControlData_",
+      "summary": "Get Conversation Control",
+      "tags": [
+        "controls"
+      ]
+    },
+    {
+      "id": "patch_api_v1_controls_conversations_conversation_id",
+      "method": "PATCH",
+      "path": "/api/v1/controls/conversations/{conversation_id}",
+      "request_schema": "ConversationControlPatchRequest",
+      "response_codes": [
+        "200",
+        "422"
+      ],
+      "response_schema": "ApiResponse_ConversationControlData_",
+      "summary": "Update Conversation Control",
+      "tags": [
+        "controls"
+      ]
+    },
+    {
+      "id": "get_api_v1_conversations",
+      "method": "GET",
+      "path": "/api/v1/conversations",
+      "request_schema": "",
+      "response_codes": [
+        "200"
+      ],
+      "response_schema": "ApiResponse_list_ConversationListItemData__",
+      "summary": "List Conversations",
+      "tags": [
+        "conversations"
+      ]
+    },
+    {
+      "id": "get_api_v1_conversations_conversation_id",
+      "method": "GET",
+      "path": "/api/v1/conversations/{conversation_id}",
+      "request_schema": "",
+      "response_codes": [
+        "200",
+        "422"
+      ],
+      "response_schema": "ApiResponse_ConversationDetailData_",
+      "summary": "Get Conversation",
+      "tags": [
+        "conversations"
+      ]
+    },
+    {
+      "id": "post_api_v1_conversations_conversation_id_send",
+      "method": "POST",
+      "path": "/api/v1/conversations/{conversation_id}/send",
+      "request_schema": "SendReplyRequest",
+      "response_codes": [
+        "200",
+        "422"
+      ],
+      "response_schema": "ApiResponse_SendReplyResultData_",
+      "summary": "Send Reply",
+      "tags": [
+        "conversations"
+      ]
+    },
+    {
+      "id": "post_api_v1_conversations_conversation_id_suggest",
+      "method": "POST",
+      "path": "/api/v1/conversations/{conversation_id}/suggest",
+      "request_schema": "ReplySuggestionRequest",
+      "response_codes": [
+        "200",
+        "422"
+      ],
+      "response_schema": "ApiResponse_ReplySuggestionData_",
+      "summary": "Suggest Reply",
+      "tags": [
+        "conversations"
+      ]
+    },
+    {
+      "id": "get_api_v1_customers",
+      "method": "GET",
+      "path": "/api/v1/customers",
+      "request_schema": "",
+      "response_codes": [
+        "200"
+      ],
+      "response_schema": "ApiResponse_list_CustomerData__",
+      "summary": "List Customers",
+      "tags": [
+        "customers"
+      ]
+    },
+    {
+      "id": "get_api_v1_customers_customer_id",
+      "method": "GET",
+      "path": "/api/v1/customers/{customer_id}",
+      "request_schema": "",
+      "response_codes": [
+        "200",
+        "422"
+      ],
+      "response_schema": "ApiResponse_CustomerData_",
+      "summary": "Get Customer",
+      "tags": [
+        "customers"
+      ]
+    },
+    {
+      "id": "get_api_v1_dashboard_summary",
+      "method": "GET",
+      "path": "/api/v1/dashboard/summary",
+      "request_schema": "",
+      "response_codes": [
+        "200"
+      ],
+      "response_schema": "ApiResponse_DashboardSummaryData_",
+      "summary": "Dashboard Summary",
+      "tags": [
+        "dashboard"
+      ]
+    },
+    {
+      "id": "get_api_v1_environment_wechat",
+      "method": "GET",
+      "path": "/api/v1/environment/wechat",
+      "request_schema": "",
+      "response_codes": [
+        "200"
+      ],
+      "response_schema": "ApiResponse_WechatEnvironmentData_",
+      "summary": "Wechat Environment",
+      "tags": [
+        "environment"
+      ]
+    },
+    {
+      "id": "get_api_v1_errors_catalog",
+      "method": "GET",
+      "path": "/api/v1/errors/catalog",
+      "request_schema": "",
+      "response_codes": [
+        "200"
+      ],
+      "response_schema": "ApiResponse_ErrorCatalogData_",
+      "summary": "Get Error Catalog",
+      "tags": [
+        "system"
+      ]
+    },
+    {
+      "id": "get_api_v1_health",
+      "method": "GET",
+      "path": "/api/v1/health",
+      "request_schema": "",
+      "response_codes": [
+        "200"
+      ],
+      "response_schema": "ApiResponse_dict_str__object__",
+      "summary": "Health",
+      "tags": [
+        "system"
+      ]
+    },
+    {
+      "id": "get_api_v1_identity_candidates",
+      "method": "GET",
+      "path": "/api/v1/identity/candidates",
+      "request_schema": "",
+      "response_codes": [
+        "200"
+      ],
+      "response_schema": "ApiResponse_list_IdentityCandidateData__",
+      "summary": "List Identity Candidates",
+      "tags": [
+        "identity"
+      ]
+    },
+    {
+      "id": "get_api_v1_identity_drafts",
+      "method": "GET",
+      "path": "/api/v1/identity/drafts",
+      "request_schema": "",
+      "response_codes": [
+        "200"
+      ],
+      "response_schema": "ApiResponse_list_IdentityDraftData__",
+      "summary": "List Identity Drafts",
+      "tags": [
+        "identity"
+      ]
+    },
+    {
+      "id": "get_api_v1_identity_self_global",
+      "method": "GET",
+      "path": "/api/v1/identity/self/global",
+      "request_schema": "",
+      "response_codes": [
+        "200"
+      ],
+      "response_schema": "ApiResponse_SelfIdentityData_",
+      "summary": "Get Global Self Identity",
+      "tags": [
+        "identity"
+      ]
+    },
+    {
+      "id": "patch_api_v1_identity_self_global",
+      "method": "PATCH",
+      "path": "/api/v1/identity/self/global",
+      "request_schema": "SelfIdentityPatchRequest",
+      "response_codes": [
+        "200",
+        "422"
+      ],
+      "response_schema": "ApiResponse_SelfIdentityData_",
+      "summary": "Update Global Self Identity",
+      "tags": [
+        "identity"
+      ]
+    },
+    {
+      "id": "post_api_v1_knowledge_import",
+      "method": "POST",
+      "path": "/api/v1/knowledge/import",
+      "request_schema": "KnowledgeImportRequest",
+      "response_codes": [
+        "200",
+        "422"
+      ],
+      "response_schema": "ApiResponse_KnowledgeImportResultData_",
+      "summary": "Import Knowledge",
+      "tags": [
+        "knowledge"
+      ]
+    },
+    {
+      "id": "get_api_v1_knowledge_search",
+      "method": "GET",
+      "path": "/api/v1/knowledge/search",
+      "request_schema": "",
+      "response_codes": [
+        "200",
+        "422"
+      ],
+      "response_schema": "ApiResponse_list_KnowledgeSearchResultData__",
+      "summary": "Search Knowledge",
+      "tags": [
+        "knowledge"
+      ]
+    },
+    {
+      "id": "get_api_v1_knowledge_status",
+      "method": "GET",
+      "path": "/api/v1/knowledge/status",
+      "request_schema": "",
+      "response_codes": [
+        "200"
+      ],
+      "response_schema": "ApiResponse_KnowledgeStatusData_",
+      "summary": "Knowledge Status",
+      "tags": [
+        "knowledge"
+      ]
+    },
+    {
+      "id": "post_api_v1_knowledge_web_build",
+      "method": "POST",
+      "path": "/api/v1/knowledge/web-build",
+      "request_schema": "WebKnowledgeBuildRequest",
+      "response_codes": [
+        "200",
+        "422"
+      ],
+      "response_schema": "ApiResponse_WebKnowledgeBuildResultData_",
+      "summary": "Build Web Knowledge",
+      "tags": [
+        "knowledge"
+      ]
+    },
+    {
+      "id": "get_api_v1_logs_recent",
+      "method": "GET",
+      "path": "/api/v1/logs/recent",
+      "request_schema": "",
+      "response_codes": [
+        "200",
+        "422"
+      ],
+      "response_schema": "ApiResponse_list_dict_str__object___",
+      "summary": "Recent Logs",
+      "tags": [
+        "logs"
+      ]
+    },
+    {
+      "id": "get_api_v1_logs_summary",
+      "method": "GET",
+      "path": "/api/v1/logs/summary",
+      "request_schema": "",
+      "response_codes": [
+        "200",
+        "422"
+      ],
+      "response_schema": "ApiResponse_LogsSummaryData_",
+      "summary": "Logs Summary",
+      "tags": [
+        "logs"
+      ]
+    },
+    {
+      "id": "get_api_v1_ping",
+      "method": "GET",
+      "path": "/api/v1/ping",
+      "request_schema": "",
+      "response_codes": [
+        "200"
+      ],
+      "response_schema": "ApiResponse_dict_str__object__",
+      "summary": "Ping",
+      "tags": [
+        "system"
+      ]
+    },
+    {
+      "id": "post_api_v1_privacy_apply_retention",
+      "method": "POST",
+      "path": "/api/v1/privacy/apply-retention",
+      "request_schema": "",
+      "response_codes": [
+        "200"
+      ],
+      "response_schema": "ApiResponse_RetentionApplyResultData_",
+      "summary": "Apply Retention Policy",
+      "tags": [
+        "privacy"
+      ]
+    },
+    {
+      "id": "get_api_v1_privacy_policy",
+      "method": "GET",
+      "path": "/api/v1/privacy/policy",
+      "request_schema": "",
+      "response_codes": [
+        "200"
+      ],
+      "response_schema": "ApiResponse_PrivacyPolicyData_",
+      "summary": "Get Privacy Policy",
+      "tags": [
+        "privacy"
+      ]
+    },
+    {
+      "id": "patch_api_v1_privacy_policy",
+      "method": "PATCH",
+      "path": "/api/v1/privacy/policy",
+      "request_schema": "PrivacyPolicyPatchRequest",
+      "response_codes": [
+        "200",
+        "422"
+      ],
+      "response_schema": "ApiResponse_PrivacyPolicyData_",
+      "summary": "Update Privacy Policy",
+      "tags": [
+        "privacy"
+      ]
+    },
+    {
+      "id": "post_api_v1_runtime_restart",
+      "method": "POST",
+      "path": "/api/v1/runtime/restart",
+      "request_schema": "RuntimeStartRequest",
+      "response_codes": [
+        "200",
+        "422"
+      ],
+      "response_schema": "ApiResponse_RuntimeActionData_",
+      "summary": "Runtime Restart",
+      "tags": [
+        "runtime"
+      ]
+    },
+    {
+      "id": "post_api_v1_runtime_start",
+      "method": "POST",
+      "path": "/api/v1/runtime/start",
+      "request_schema": "RuntimeStartRequest",
+      "response_codes": [
+        "200",
+        "422"
+      ],
+      "response_schema": "ApiResponse_RuntimeActionData_",
+      "summary": "Runtime Start",
+      "tags": [
+        "runtime"
+      ]
+    },
+    {
+      "id": "get_api_v1_runtime_status",
+      "method": "GET",
+      "path": "/api/v1/runtime/status",
+      "request_schema": "",
+      "response_codes": [
+        "200"
+      ],
+      "response_schema": "ApiResponse_RuntimeStatusData_",
+      "summary": "Runtime Status",
+      "tags": [
+        "runtime"
+      ]
+    },
+    {
+      "id": "post_api_v1_runtime_stop",
+      "method": "POST",
+      "path": "/api/v1/runtime/stop",
+      "request_schema": "",
+      "response_codes": [
+        "200"
+      ],
+      "response_schema": "ApiResponse_RuntimeActionData_",
+      "summary": "Runtime Stop",
+      "tags": [
+        "runtime"
+      ]
+    },
+    {
+      "id": "get_api_v1_settings",
+      "method": "GET",
+      "path": "/api/v1/settings",
+      "request_schema": "",
+      "response_codes": [
+        "200"
+      ],
+      "response_schema": "ApiResponse_SettingsData_",
+      "summary": "Get Settings",
+      "tags": [
+        "settings"
+      ]
+    },
+    {
+      "id": "patch_api_v1_settings",
+      "method": "PATCH",
+      "path": "/api/v1/settings",
+      "request_schema": "SettingsPatchRequest",
+      "response_codes": [
+        "200",
+        "422"
+      ],
+      "response_schema": "ApiResponse_SettingsData_",
+      "summary": "Update Settings",
+      "tags": [
+        "settings"
+      ]
+    }
+  ],
+  "frontend_pages": {
+    "customers": [
+      "/api/v1/customers",
+      "/api/v1/customers/{customer_id}",
+      "/api/v1/identity/drafts",
+      "/api/v1/identity/candidates"
+    ],
+    "home": [
+      "/api/v1/dashboard/summary",
+      "/api/v1/runtime/status"
+    ],
+    "knowledge": [
+      "/api/v1/knowledge/status",
+      "/api/v1/knowledge/search",
+      "/api/v1/knowledge/import",
+      "/api/v1/knowledge/web-build"
+    ],
+    "messages": [
+      "/api/v1/conversations",
+      "/api/v1/conversations/{conversation_id}",
+      "/api/v1/conversations/{conversation_id}/suggest",
+      "/api/v1/conversations/{conversation_id}/send"
+    ],
+    "settings": [
+      "/api/v1/settings",
+      "/api/v1/privacy/policy",
+      "/api/v1/environment/wechat",
+      "/api/v1/controls/conversations/{conversation_id}",
+      "/api/v1/errors/catalog"
+    ]
+  },
+  "schema_count": 71,
+  "schemas": [
+    "ApiErrorPayload",
+    "ApiResponse_ConversationControlData_",
+    "ApiResponse_ConversationDetailData_",
+    "ApiResponse_CustomerData_",
+    "ApiResponse_DashboardSummaryData_",
+    "ApiResponse_ErrorCatalogData_",
+    "ApiResponse_KnowledgeImportResultData_",
+    "ApiResponse_KnowledgeStatusData_",
+    "ApiResponse_LogsSummaryData_",
+    "ApiResponse_PrivacyPolicyData_",
+    "ApiResponse_ReplySuggestionData_",
+    "ApiResponse_RetentionApplyResultData_",
+    "ApiResponse_RuntimeActionData_",
+    "ApiResponse_RuntimeStatusData_",
+    "ApiResponse_SelfIdentityData_",
+    "ApiResponse_SendReplyResultData_",
+    "ApiResponse_SettingsData_",
+    "ApiResponse_WebKnowledgeBuildResultData_",
+    "ApiResponse_WechatEnvironmentData_",
+    "ApiResponse_dict_str__object__",
+    "ApiResponse_list_ConversationListItemData__",
+    "ApiResponse_list_CustomerData__",
+    "ApiResponse_list_IdentityCandidateData__",
+    "ApiResponse_list_IdentityDraftData__",
+    "ApiResponse_list_KnowledgeSearchResultData__",
+    "ApiResponse_list_dict_str__object___",
+    "AppStatusData",
+    "BusinessReasonCodeData",
+    "BusinessStatusData",
+    "ConversationControlData",
+    "ConversationControlPatchRequest",
+    "ConversationDetailData",
+    "ConversationListItemData",
+    "ConversationMessageData",
+    "CustomerData",
+    "DaemonStatusData",
+    "DashboardPendingData",
+    "DashboardSummaryData",
+    "ErrorCatalogData",
+    "HTTPValidationError",
+    "HttpErrorCodeData",
+    "IdentityCandidateData",
+    "IdentityDraftData",
+    "KnowledgeFileImportData",
+    "KnowledgeImportRequest",
+    "KnowledgeImportResultData",
+    "KnowledgeSearchResultData",
+    "KnowledgeStatusData",
+    "LogsSummaryData",
+    "PrivacyPolicyData",
+    "PrivacyPolicyPatchRequest",
+    "ReplySuggestionData",
+    "ReplySuggestionRequest",
+    "RetentionApplyResultData",
+    "RuntimeActionData",
+    "RuntimeStartRequest",
+    "RuntimeStatusData",
+    "ScheduleBlockData",
+    "ScheduleBlockPatchRequest",
+    "SelfIdentityData",
+    "SelfIdentityPatchRequest",
+    "SendReplyRequest",
+    "SendReplyResultData",
+    "SettingsData",
+    "SettingsPatchRequest",
+    "ValidationError",
+    "WebKnowledgeBuildRequest",
+    "WebKnowledgeBuildResultData",
+    "WechatEnvironmentData",
+    "WorkHoursData",
+    "WorkHoursPatchRequest"
+  ]
+}

@@ -20,6 +20,14 @@ class ScheduleBlock:
 
 
 @dataclass(slots=True)
+class PrivacyPolicy:
+    redact_sensitive_logs: bool = True
+    log_retention_days: int = 14
+    memory_retention_days: int = 90
+    max_recent_log_events: int = 100
+
+
+@dataclass(slots=True)
 class SettingsSnapshot:
     auto_reply_enabled: bool = True
     reply_style: str = "自然友好"
@@ -32,6 +40,14 @@ class SettingsSnapshot:
     esc_action: str = "pause"
     schedule_enabled: bool = False
     schedule_blocks: list[ScheduleBlock] = field(default_factory=list)
+    privacy: PrivacyPolicy = field(default_factory=PrivacyPolicy)
+    human_takeover_sessions: list[str] = field(default_factory=list)
+    paused_sessions: list[str] = field(default_factory=list)
+    whitelist: list[str] = field(default_factory=list)
+    blacklist: list[str] = field(default_factory=list)
+    request_timeout_seconds: float = 30.0
+    retry_attempts: int = 2
+    real_send_enabled: bool = False
 
 
 @dataclass(slots=True)

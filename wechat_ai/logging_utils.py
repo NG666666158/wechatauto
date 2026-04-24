@@ -115,5 +115,41 @@ def tail_jsonl_events(limit: int = 20, path: Path | None = None) -> list[dict[st
     return events[-limit:]
 
 
+def is_error_event(event: Mapping[str, Any]) -> bool:
+    level = str(event.get("level") or "").strip().lower()
+    if level:
+        return level in {"error", "critical", "exception"}
+    event_type = str(event.get("event_type") or "").lower()
+    return "error" in event_type or bool(event.get("exception_type")) or bool(event.get("reason_code"))
+
+
+def filter_log_events(
+    events: Iterable[Mapping[str, Any]],
+    *,
+    event_type: str | None = None,
+    trace_id: str | None = None,
+    only_errors: bool = False,
+) -> list[dict[str, Any]]:
+    filtered: list[dict[str, Any]] = []
+    for event in events:
+        if event_type is not None and event.get("event_type") != event_type:
+            continue
+        if trace_id is not None and event.get("trace_id") != trace_id:
+            continue
+        if only_errors and not is_error_event(event):
+            continue
+        filtered.append(dict(event))
+    return filtered
+
+
+def summarize_log_events(events: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    recent_events = list(events)
+    return {
+        "recent_count": len(recent_events),
+        "recent_error_count": sum(1 for event in recent_events if is_error_event(event)),
+        "last_event_time": recent_events[-1].get("timestamp") if recent_events else None,
+    }
+
+
 def format_event_lines(events: Iterable[Mapping[str, Any]]) -> list[str]:
     return [json.dumps(dict(event), ensure_ascii=False, indent=2) for event in events]

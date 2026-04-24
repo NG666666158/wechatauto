@@ -2,380 +2,281 @@
 
 ## 文档目的
 
-这份文档用于说明当前仓库的整体结构：它既是一个 Windows 微信桌面自动化项目，也是在自动化层之上叠加了一套增强版 `wechat_ai` 运行时。
+这份文档说明当前仓库的真实结构、模块边界、数据流和存储布局。
 
-建议先读 [README.md](/C:/github/pywechat/pywechat-main/pywechat-main/README.md)。如果你更关心项目还差什么、是否适合长期使用，请读 [PROJECT_PLAN.md](/C:/github/pywechat/pywechat-main/pywechat-main/PROJECT_PLAN.md)。
+如果你第一次进入这个项目，建议先看：
 
-历史设计稿和阶段计划保存在 [docs/superpowers/](/C:/github/pywechat/pywechat-main/pywechat-main/docs/superpowers) 下，那部分文档描述的是演进过程；本文件描述的是当前状态。
+1. [README.md](/C:/github/pywechat/pywechat-main/pywechat-main/README.md)
+2. [docs/architecture-overview.md](/C:/github/pywechat/pywechat-main/pywechat-main/docs/architecture-overview.md)
+3. [docs/desktop-app-backend.md](/C:/github/pywechat/pywechat-main/pywechat-main/docs/desktop-app-backend.md)
+4. [PROJECT_PLAN.md](/C:/github/pywechat/pywechat-main/pywechat-main/PROJECT_PLAN.md)
 
 ## 系统分层
 
-现在这个仓库可以分成两大层：
+当前项目可以分成四层：
 
-1. 桌面自动化层
-   主要由 `pywechat/` 和 `pyweixin/` 提供，负责打开微信窗口、识别控件、读取消息、发送回复。
-2. AI 运行时层
-   主要由 `wechat_ai/` 提供，负责决定回复时要带什么上下文、要加载什么画像、要检索什么知识、要不要带入记忆，以及如何记录调试事件。
+1. 微信桌面自动化层
+2. AI 运行时编排层
+3. 数据与知识层
+4. 桌面客户端服务层
 
-简化后的链路如下：
+简化后的链路是：
 
 ```text
-Windows 微信界面
--> pywechat / pyweixin 自动化层
--> wechat_ai 运行时
--> MiniMax provider
+微信桌面 UI
+-> pywechat / pyweixin
+-> wechat_ai.wechat_runtime
+-> orchestration.reply_pipeline
+-> provider / knowledge / memory / profiles / self_identity
 -> 回复文本
--> 自动化发送
+-> pyweixin 发送
 ```
 
-## 核心模块
+## 一层：微信桌面自动化层
+
+主要目录：
+
+- `pywechat/`
+- `pyweixin/`
+
+职责：
+
+- 打开微信窗口
+- 识别聊天界面与控件
+- 读取消息
+- 检测未读
+- 发送回复
+
+这是整个系统与真实微信交互的底层。
+
+## 二层：AI 运行时编排层
+
+主要目录：
+
+- `wechat_ai/`
 
 ### `wechat_ai/wechat_runtime.py`
 
-这是当前运行时的总协调入口，职责包括：
+这是运行时总入口，负责：
 
-- 初始化运行时目录
-- 从环境变量读取配置
-- 构建 provider、retriever、profile store、memory store、event logger
-- 暴露单聊、群聊、全局轮询三种运行模式
-- 在运行时边界保留 fallback 处理
-- 在发送回复和 fallback 时记录结构化事件
-
-这个文件本质上是“微信自动化层”和“AI 编排层”之间的边界。
-
-### `wechat_ai/reply_engine.py`
-
-这是一个较薄的模型调用层，职责包括：
-
-- 区分单聊和群聊系统提示词
-- 调用 `PromptBuilder` 渲染最终 user prompt
-- 调用 provider 的 `complete()` 方法
-
-它不负责完整编排。完整编排由 `reply_pipeline.py` 决定；`reply_engine.py` 只负责把输入转成一次模型调用。
-
-### `wechat_ai/minimax_provider.py`
-
-MiniMax 的 provider 适配器，职责包括：
-
-- 构造 MiniMax 请求 payload
-- 处理模型返回结果
-- 暴露统一的 `complete(system_prompt, user_prompt, model)` 接口
-
-当前系统仍然是 MiniMax-first，但 provider 相关逻辑已经被限制在较小边界内，后续替换空间明确。
+- 初始化路径与目录
+- 读取环境配置
+- 组装 provider、retriever、memory、profile、identity 等依赖
+- 暴露单聊、群聊、全局轮询等运行模式
+- 管理守护主循环、事件日志与回退逻辑
+- `stop_event` 已接入本地守护控制层与全局自动回复主循环，停止时会停止继续扫描新消息，并在退出前 flush pending 消息
 
 ### `wechat_ai/orchestration/`
 
-这是增强运行时的核心编排包。
+这是回复前编排的核心层。
 
-`message_parser.py`
+主要模块：
 
-- 把原始运行时消息规范化成共享的 `Message` 对象
+- `message_parser.py`
+- `context_manager.py`
+- `prompt_builder.py`
+- `reply_pipeline.py`
 
-`context_manager.py`
+职责：
 
-- 在提示词构建前裁剪和准备最近消息上下文
+- 标准化消息
+- 整理上下文
+- 拼装 prompt
+- 加载画像、自我身份、记忆与知识
+- 调用回复引擎
+- 记录事件与写回 memory
 
-`prompt_builder.py`
+### `wechat_ai/reply_engine.py`
 
-- 构建结构化提示词，目前支持：
-  - 助手画像摘要
-  - 用户画像摘要
-  - 最近会话上下文
-  - 检索到的知识片段
-  - 可选的会话记忆摘要
-  - 当前回复任务
+职责：
 
-`reply_pipeline.py`
+- 负责把编排结果转成一次模型调用
+- 连接 `PromptBuilder` 与 provider
 
-- 负责编排完整的回复前流程：
-  - 标准化消息
-  - 加载用户画像
-  - 加载当前助手画像
-  - 准备上下文
-  - 执行知识检索
-  - 读取记忆摘要
-  - 记录结构化事件
-  - 调用 reply engine
-  - 将会话快照写回 memory
+### `wechat_ai/minimax_provider.py`
 
-这部分就是当前运行时真正的“思考流水线”。
+职责：
 
-### `wechat_ai/profile/`
+- 屏蔽 MiniMax API 细节
+- 暴露统一 `complete(...)` 接口
 
-本地画像系统。
+## 三层：数据与知识层
 
-`user_profile.py`
+### 1. 画像与身份
 
-- 用户级别的标签、备注、偏好等信息
+主要目录：
 
-`agent_profile.py`
+- `wechat_ai/profile/`
+- `wechat_ai/identity/`
+- `wechat_ai/self_identity/`
 
-- 助手画像，例如目标、风格规则、禁止规则、说明等
+职责：
 
-`profile_store.py`
+- 用户画像管理
+- 助手画像管理
+- 用户身份识别与候选归并
+- 分层自我身份管理
 
-- 用户画像和助手画像的 JSON 读写入口
+当前自我身份采用三层模型：
 
-`tag_manager.py`
+1. 全局身份
+2. 关系身份
+3. 用户级覆盖身份
 
-- 标签标准化与去重工具
+### 2. RAG 与知识库
 
-`defaults.py`
+主要目录：
 
-- 默认 prompt、默认 ID、默认路径等配置基础
+- `wechat_ai/rag/`
 
-这些画像不是简单存储，它们的摘要会被真正注入到提示词中。
+职责：
 
-### `wechat_ai/rag/`
+- 文档导入
+- 文本抽取
+- 文档切块
+- 索引构建
+- 检索与 rerank 抽象
 
-本地检索增强能力。
+当前已支持：
 
-`ingest.py`
+- `.txt`
+- `.md`
+- `.json`
+- `.pdf`
+- `.docx`
+- 图片 OCR
 
-- 从本地文件加载知识文档
+### 3. 记忆
 
-`knowledge_store.py`
+主要目录：
 
-- 规范化知识文档与索引数据结构
+- `wechat_ai/memory/`
 
-`chunker.py`
+职责：
 
-- 将知识文档切分成可检索片段
+- 按会话保存轻量 memory
+- 保存会话快照
+- 注入摘要型记忆
 
-`embeddings.py`
+### 4. 日志与路径
 
-- 嵌入抽象接口，以及本地测试用的 fake embeddings
+主要模块：
 
-`retriever.py`
+- `wechat_ai/logging_utils.py`
+- `wechat_ai/paths.py`
 
-- 基于本地索引进行相似度检索
+职责：
 
-`reranker.py`
+- 写入结构化 JSONL 事件日志
+- 统一数据目录布局
+- 提供初始化和工具脚本依赖的路径入口
 
-- rerank 抽象，目前默认 no-op
+## 四层：桌面客户端服务层
 
-当前这层是本地优先、文件优先的实现，后面可以替换成更强的嵌入与检索后端。
+主要目录：
 
-### `wechat_ai/memory/`
+- `wechat_ai/app/`
+- `wechat_ai/server/`
 
-轻量记忆层。
+核心入口：
 
-`memory_store.py`
+- [wechat_ai/app/service.py](/C:/github/pywechat/pywechat-main/pywechat-main/wechat_ai/app/service.py)
+- [wechat_ai/server/main.py](/C:/github/pywechat/pywechat-main/pywechat-main/wechat_ai/server/main.py)
 
-- 按聊天维度保存本地记忆文件
-- 当前存储内容包括：
-  - 最近会话快照
-  - 长期摘要文本
-  - 最后更新时间
+这一层的目标是：
 
-`conversation_memory.py`
+- 给桌面客户端提供稳定边界
+- 屏蔽底层运行时实现细节
+- 提供适合前端调用的数据结构
 
-- 会话快照数据结构
+`wechat_ai/app/` 提供客户端业务 facade，`wechat_ai/server/` 提供本地 HTTP API 入口。第一版服务层已经使用 `/api/v1` 前缀，并提供 `ping`、`health`、统一响应结构、错误码和 `trace_id`。
 
-`summary_memory.py`
+当前已经具备的能力包括：
 
-- 摘要数据结构
+- app 状态读取
+- daemon 状态控制
+- 设置读写
+- 客户列表与客户详情聚合
+- identity draft / candidate 列表
+- 自我身份管理
+- 知识库导入与状态查询
+- 联网扩库入口
 
-当前行为是：
+仍未完全闭环的接口主要是：
 
-- 有记忆摘要时会把它注入提示词
-- 每次成功生成回复后，会追加一次会话快照
-- 摘要生成仍然是手动/占位驱动，而不是自动更新
+- `suggest_reply(...)`
+- `send_reply(...)`
 
-### `wechat_ai/logging_utils.py`
+## 数据目录布局
 
-结构化可观测性基础模块。
+默认运行数据位于：
 
-- 提供 append-only JSONL logger
-- 使用 UTC 时间戳
-- 提供事件读取与 tail 辅助函数
-- 提供 inspection 脚本可复用的格式化能力
+- `wechat_ai/data/users/`
+- `wechat_ai/data/agents/`
+- `wechat_ai/data/self_identity/`
+- `wechat_ai/data/knowledge/`
+- `wechat_ai/data/memory/`
+- `wechat_ai/data/logs/`
+- `wechat_ai/data/app/`
 
-当前日志事件包括：
+其中：
 
-- `message_received`
-- `profile_loaded`
-- `retrieval_completed`
-- `prompt_built`
-- `model_completed`
-- `fallback_used`
-- `message_sent`
+- 用户画像在 `users/`
+- 助手画像在 `agents/`
+- 自我身份在 `self_identity/`
+- 知识库索引和上传文件在 `knowledge/`
+- memory 在 `memory/`
+- 运行事件日志在 `logs/`
+- 桌面端设置和 daemon 状态在 `app/`
 
-### `wechat_ai/paths.py`
+## 真实回复数据流
 
-统一的数据目录布局。
-
-- `wechat_ai/data/users`
-- `wechat_ai/data/agents`
-- `wechat_ai/data/knowledge`
-- `wechat_ai/data/memory`
-- `wechat_ai/data/logs`
-
-同时提供启动时创建这些目录的 bootstrap 能力。
-
-## 运行时数据流
-
-当前回复链路可以概括为：
+回复链路可以概括为：
 
 ```text
-微信收到消息
--> wechat_runtime 判断会话和运行模式
+收到微信消息
+-> wechat_runtime 识别会话与运行模式
 -> reply_pipeline 标准化消息
--> profile store 加载用户/助手画像
--> context manager 裁剪上下文
--> retriever 检索知识
--> memory store 读取记忆摘要
--> prompt builder 渲染结构化提示词
--> MiniMax provider 生成回复
--> reply pipeline 记录完成事件并写入记忆快照
--> wechat_runtime 通过自动化层发送回复
--> runtime 记录 message_sent 或 fallback_used
+-> 加载用户画像 / 助手画像 / 自我身份
+-> 裁剪上下文
+-> 检索知识
+-> 读取 memory
+-> 构建 prompt
+-> provider 生成回复
+-> 写入日志与 memory
+-> 通过 pyweixin 发送
 ```
 
-更具体地说：
+## 调试路径
 
-1. `wechat_runtime.py` 从 `pyweixin` 侧拿到消息文本和会话信息
-2. 它构造一个统一的 `Message`
-3. `ReplyPipeline.generate_reply()` 完成编排
-4. `ReplyEngine` 拼装最终提示词并调用 MiniMax
-5. 运行时再通过微信自动化层把回复发送出去
-
-## 本地存储布局
-
-当前运行时采用文件型本地存储。
-
-### 画像
-
-- 用户画像保存在 `wechat_ai/data/users/`
-- 助手画像保存在 `wechat_ai/data/agents/`
-
-画像文件是 JSON，缺失时会按默认值自动创建。
-
-### 知识库
-
-- 本地知识索引保存在 `wechat_ai/data/knowledge/`
-- 当前默认索引文件是 `local_knowledge_index.json`
-
-### 记忆
-
-- 每个聊天会话的记忆文件保存在 `wechat_ai/data/memory/`
-- 文件名由 `chat_id` 规范化后生成
-
-### 日志
-
-- 结构化运行事件追加到 `wechat_ai/data/logs/runtime_events.jsonl`
-
-## 运行脚本
-
-当前主要运行入口在 `scripts/` 下。
-
-### 执行脚本
-
-- `run_minimax_friend_auto_reply.py`
-- `run_minimax_group_at_reply.py`
-- `run_minimax_global_auto_reply.py`
-
-这些脚本都会：
-
-- 做 COM/bootstrap 初始化
-- 从环境变量构建 `WeChatAIApp`
-- 支持 `--debug`
-- 输出 JSON 结果摘要
-
-### 知识库脚本
-
-- `ingest_knowledge.py`
-- `rebuild_index.py`
-
-### 调试脚本
-
-- `show_recent_logs.py`
-- `show_memory_summary.py`
-- `test_prompt_preview.py`
-
-## 可观测性与调试路径
-
-当前排障流程是本地优先、文件优先的。
-
-### 当你感觉运行不对劲时
-
-1. 用 `--debug` 启动运行脚本
-2. 查看最近结构化日志
-3. 查看对应聊天的记忆摘要
-4. 如果怀疑是提示词问题，再跑 prompt preview
-
-推荐命令：
+调试时建议优先看：
 
 ```powershell
 py -3 scripts\show_recent_logs.py --limit 20
 py -3 scripts\show_memory_summary.py --chat-id friend_demo
 py -3 scripts\test_prompt_preview.py
+py -3 scripts\show_desktop_app_snapshot.py
 ```
 
-### 当前日志主要帮助回答什么问题
+真实微信相关检查：
 
-- 消息有没有进入 pipeline
-- 画像有没有加载
-- 检索有没有执行
-- prompt preview 大概是什么样
-- 模型有没有正常完成
-- 有没有进入 fallback
-- 回复是否已经发送
+```powershell
+py -3 scripts\test_pyweixin_smoke.py
+py -3 scripts\test_pull_messages_regression.py
+```
 
-## 测试版图
+## 当前架构判断
 
-当前 `scripts/` 下已经有较完整的 `wechat_ai` 测试面。
+当前架构的优点：
 
-### 核心运行时与偏集成单测
+- 模块边界已经比较清晰
+- 画像、身份、自我身份、memory、RAG 已经进入统一编排链路
+- 数据目录已经集中
+- 真实运行、调试、测试三条路径都已有入口
 
-- `test_wechat_ai_unit.py`
-- `test_wechat_ai_pipeline_unit.py`
-- `test_wechat_ai_reply_pipeline_unit.py`
+当前架构仍需补强的点：
 
-### 提示词与编排测试
-
-- `test_wechat_ai_prompt_builder_unit.py`
-- `test_wechat_ai_orchestration_context_unit.py`
-
-### 画像测试
-
-- `test_wechat_ai_profile_models_unit.py`
-- `test_wechat_ai_profile_config_unit.py`
-- `test_wechat_ai_profile_store_unit.py`
-
-### RAG 测试
-
-- `test_wechat_ai_rag_chunking_unit.py`
-- `test_wechat_ai_rag_loading_unit.py`
-- `test_wechat_ai_rag_retrieval_unit.py`
-
-### 路径、基础与工具测试
-
-- `test_wechat_ai_models_unit.py`
-- `test_wechat_ai_paths_unit.py`
-- `test_wechat_ai_foundation_smoke.py`
-- `test_wechat_ai_observability_scripts_unit.py`
-- `test_prompt_preview.py`
-
-这些测试已经能较好覆盖增强运行时，但它们仍然以本地、合成输入和隔离验证为主。真正长时间运行的微信 live 验证仍然属于后续稳定性建设范围。
-
-## 架构上的优势
-
-当前架构已经有几个明显优点：
-
-- 编排边界比早期清晰很多
-- 状态不再只在内存里，而是有文件型持久化
-- 提示词链路可检查、可预览
-- 调试不依赖真实微信会话也能看到不少运行时状态
-- 核心模块已经有明确测试覆盖
-
-## 当前架构上的限制
-
-当前设计仍然是轻量实现，因此还存在这些限制：
-
-- 记忆摘要还不能自动更新
-- 检索后端仍然偏本地开发态
-- 可观测性目前是 append-only JSONL，而不是更强的指标/仪表盘体系
-- 真实 Windows 微信长时间运行下的稳定性还需要更多验证
-
-这些限制对应的后续工作，已经在 [PROJECT_PLAN.md](/C:/github/pywechat/pywechat-main/pywechat-main/PROJECT_PLAN.md) 中按路线图列出。
+- 长时守护稳定性
+- 桌面客户端完整闭环
+- 更细的安全边界
+- 更完整的运维策略

@@ -5,7 +5,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Mapping
 
-from .models import ScheduleBlock, SettingsSnapshot, WorkHours
+from .models import PrivacyPolicy, ScheduleBlock, SettingsSnapshot, WorkHours
 
 
 class DesktopSettingsStore:
@@ -34,6 +34,9 @@ class DesktopSettingsStore:
         schedule_blocks_payload = payload.get("schedule_blocks", [])
         if not isinstance(schedule_blocks_payload, list):
             schedule_blocks_payload = []
+        privacy_payload = payload.get("privacy", {})
+        if not isinstance(privacy_payload, Mapping):
+            privacy_payload = {}
         return SettingsSnapshot(
             auto_reply_enabled=bool(payload.get("auto_reply_enabled", True)),
             reply_style=str(payload.get("reply_style", "自然友好")),
@@ -60,6 +63,19 @@ class DesktopSettingsStore:
                 for item in schedule_blocks_payload
                 if isinstance(item, Mapping)
             ],
+            privacy=PrivacyPolicy(
+                redact_sensitive_logs=bool(privacy_payload.get("redact_sensitive_logs", True)),
+                log_retention_days=max(int(privacy_payload.get("log_retention_days", 14)), 1),
+                memory_retention_days=max(int(privacy_payload.get("memory_retention_days", 90)), 1),
+                max_recent_log_events=max(int(privacy_payload.get("max_recent_log_events", 100)), 1),
+            ),
+            human_takeover_sessions=_string_list(payload.get("human_takeover_sessions", [])),
+            paused_sessions=_string_list(payload.get("paused_sessions", [])),
+            whitelist=_string_list(payload.get("whitelist", [])),
+            blacklist=_string_list(payload.get("blacklist", [])),
+            request_timeout_seconds=max(float(payload.get("request_timeout_seconds", 30.0)), 1.0),
+            retry_attempts=max(int(payload.get("retry_attempts", 2)), 0),
+            real_send_enabled=bool(payload.get("real_send_enabled", False)),
         )
 
     def _apply_patch(self, current: SettingsSnapshot, patch: Mapping[str, object]) -> SettingsSnapshot:
@@ -73,6 +89,18 @@ class DesktopSettingsStore:
                 payload["work_hours"] = merged_work_hours
             elif key == "schedule_blocks" and isinstance(value, list):
                 payload["schedule_blocks"] = value
+            elif key == "privacy" and isinstance(value, Mapping):
+                merged_privacy = dict(payload["privacy"])
+                for nested_key, nested_value in value.items():
+                    if nested_key in merged_privacy:
+                        merged_privacy[nested_key] = nested_value
+                payload["privacy"] = merged_privacy
             elif key in payload:
                 payload[key] = value
         return self._deserialize(payload)
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
