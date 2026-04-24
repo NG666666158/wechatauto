@@ -33,6 +33,8 @@ class ReplyEngine:
         *,
         agent_profile=None,
         user_profile=None,
+        self_identity_profile=None,
+        self_identity=None,
         knowledge_chunks: list[str] | None = None,
         memory_summary: str | None = None,
     ) -> str:
@@ -42,6 +44,8 @@ class ReplyEngine:
             contexts=contexts,
             agent_profile=agent_profile,
             user_profile=user_profile,
+            self_identity_profile=self_identity_profile if self_identity_profile is not None else self_identity,
+            self_identity=self_identity,
             knowledge_chunks=knowledge_chunks,
             memory_summary=memory_summary,
         )
@@ -58,6 +62,8 @@ class ReplyEngine:
         *,
         agent_profile=None,
         user_profile=None,
+        self_identity_profile=None,
+        self_identity=None,
         knowledge_chunks: list[str] | None = None,
         memory_summary: str | None = None,
     ) -> str:
@@ -67,6 +73,8 @@ class ReplyEngine:
             contexts=contexts,
             agent_profile=agent_profile,
             user_profile=user_profile,
+            self_identity_profile=self_identity_profile if self_identity_profile is not None else self_identity,
+            self_identity=self_identity,
             knowledge_chunks=knowledge_chunks,
             memory_summary=memory_summary,
         )
@@ -84,6 +92,8 @@ class ReplyEngine:
         *,
         agent_profile=None,
         user_profile=None,
+        self_identity_profile=None,
+        self_identity=None,
         knowledge_chunks: list[str] | None = None,
         memory_summary: str | None = None,
     ) -> str:
@@ -93,6 +103,8 @@ class ReplyEngine:
             contexts=contexts,
             agent_profile=agent_profile,
             user_profile=user_profile,
+            self_identity_profile=self_identity_profile if self_identity_profile is not None else self_identity,
+            self_identity=self_identity,
             knowledge_chunks=knowledge_chunks,
             memory_summary=memory_summary,
         )

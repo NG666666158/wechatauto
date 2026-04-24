@@ -201,6 +201,22 @@ class LoggingAndMemoryTests(unittest.TestCase):
         self.assertEqual(loaded.recent_conversation[0].messages, ["hi", "are you there?"])
         self.assertEqual(loaded.recent_conversation[0].captured_at, "2026-04-22T10:00:00Z")
 
+    def test_memory_store_uses_shared_safe_filename_and_preserves_original_chat_id(self) -> None:
+        from wechat_ai.storage_names import safe_storage_name
+
+        temp_dir = ROOT / ".tmp_observability_unit_memory" / str(uuid4())
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        store = MemoryStore(base_dir=temp_dir)
+        chat_id = ' 群聊 /\\:*?"<>| friend '
+
+        store.update_summary(chat_id, "Prefers concise updates.")
+        memory_path = temp_dir / f"{safe_storage_name(chat_id, fallback='unknown_chat')}.json"
+
+        self.assertTrue(memory_path.exists())
+        raw = json.loads(memory_path.read_text(encoding="utf-8"))
+        self.assertEqual(raw["chat_id"], chat_id)
+        self.assertEqual(store.load(chat_id).chat_id, chat_id)
+
     def test_memory_store_truncates_redacts_and_limits_snapshots(self) -> None:
         temp_dir = ROOT / ".tmp_observability_unit_memory" / str(uuid4())
         temp_dir.mkdir(parents=True, exist_ok=True)
@@ -239,6 +255,19 @@ class GlobalAutoReplyTests(unittest.TestCase):
             ),
             fallback_reply="fallback",
             mention_names=("me",),
+            identity_resolver=types.SimpleNamespace(
+                resolve=lambda signal: types.SimpleNamespace(
+                    resolved_user_id=None,
+                    draft_user_id=None,
+                    conversation_id=signal.conversation_id,
+                    participant_display_name=signal.sender_name or signal.display_name,
+                    relationship_to_me=None,
+                    current_intent=None,
+                    identity_confidence=None,
+                    identity_status="unknown",
+                    evidence=[],
+                )
+            ),
         )
 
     def test_process_unread_session_merges_direct_messages_into_one_reply(self) -> None:
@@ -262,6 +291,90 @@ class GlobalAutoReplyTests(unittest.TestCase):
         self.assertEqual(opened_chats, ["Alice"])
         self.assertEqual(sent_messages, [("Alice", ["reply:hello\nthere"])])
         self.assertIn("Alice", app.active_last_seen_signature_by_session)
+
+    def test_process_unread_session_reorders_reverse_unread_messages_by_context_timeline(self) -> None:
+        sent_messages: list[tuple[str, list[str]]] = []
+        fake_main_window = self._build_fake_active_chat(
+            [("111", 1, False), ("333", 2, False), ("555", 3, False), ("777", 4, False), ("999", 5, False)]
+        )
+
+        self.runtime.Navigator = types.SimpleNamespace(
+            open_dialog_window=lambda friend, is_maximize=False, search_pages=5: fake_main_window
+        )
+        self.runtime.Tools = types.SimpleNamespace(is_group_chat=lambda window: False)
+        self.runtime.Messages = types.SimpleNamespace(
+            pull_messages=lambda friend, number, close_weixin=False, search_pages=5: ["111", "333", "555", "777", "999"],
+            send_messages_to_friend=lambda friend, messages, close_weixin=False: sent_messages.append((friend, messages)),
+        )
+
+        app = self.build_app()
+        result = app.process_unread_session("Alice", ["999", "777", "555", "333", "111"])
+
+        self.assertEqual(result["friend_replies"], 1)
+        self.assertEqual(sent_messages, [("Alice", ["reply:111\n333\n555\n777\n999"])])
+
+    def test_process_unread_session_keeps_original_order_when_context_cannot_resolve_timeline(self) -> None:
+        sent_messages: list[tuple[str, list[str]]] = []
+        fake_main_window = self._build_fake_active_chat([("hello", 1, False), ("there", 2, False)])
+
+        self.runtime.Navigator = types.SimpleNamespace(
+            open_dialog_window=lambda friend, is_maximize=False, search_pages=5: fake_main_window
+        )
+        self.runtime.Tools = types.SimpleNamespace(is_group_chat=lambda window: False)
+        self.runtime.Messages = types.SimpleNamespace(
+            pull_messages=lambda friend, number, close_weixin=False, search_pages=5: ["earlier-context"],
+            send_messages_to_friend=lambda friend, messages, close_weixin=False: sent_messages.append((friend, messages)),
+        )
+
+        app = self.build_app()
+        result = app.process_unread_session("Alice", ["there", "hello"])
+
+        self.assertEqual(result["friend_replies"], 1)
+        self.assertEqual(sent_messages, [("Alice", ["reply:there\nhello"])])
+
+    def test_send_reply_populates_identity_fields_from_resolver(self) -> None:
+        captured_messages: list[object] = []
+        self.runtime.Messages = types.SimpleNamespace(
+            send_messages_to_friend=lambda friend, messages, close_weixin=False: None
+        )
+
+        app = self.runtime.WeChatAIApp(
+            engine=types.SimpleNamespace(
+                context_limit=10,
+                generate_reply=lambda message: captured_messages.append(message) or "reply",
+            ),
+            fallback_reply="fallback",
+            mention_names=("me",),
+            identity_resolver=types.SimpleNamespace(
+                resolve=lambda signal: types.SimpleNamespace(
+                    resolved_user_id="user_000001",
+                    draft_user_id=None,
+                    conversation_id=signal.conversation_id,
+                    participant_display_name=signal.sender_name or signal.display_name,
+                    relationship_to_me="客户",
+                    current_intent="咨询",
+                    identity_confidence=0.91,
+                    identity_status="resolved",
+                    evidence=["alias_exact_match"],
+                )
+            ),
+        )
+
+        result = app._send_reply(
+            session_name="Project Group",
+            message_text="@me 在吗",
+            contexts=["ctx-1"],
+            is_group=True,
+            sender_name="张三",
+        )
+
+        self.assertEqual(result["group_replies"], 1)
+        self.assertEqual(len(captured_messages), 1)
+        self.assertEqual(captured_messages[0].resolved_user_id, "user_000001")
+        self.assertEqual(captured_messages[0].conversation_id, "group:Project Group")
+        self.assertEqual(captured_messages[0].participant_display_name, "张三")
+        self.assertEqual(captured_messages[0].identity_status, "resolved")
+        self.assertEqual(captured_messages[0].identity_evidence, ["alias_exact_match"])
 
     def test_process_unread_session_ignores_group_messages_without_mention(self) -> None:
         sent_messages: list[tuple[str, list[str]]] = []
@@ -338,7 +451,12 @@ class GlobalAutoReplyTests(unittest.TestCase):
             [("Alice", ["reply:hello\nthere"]), ("Alice", ["reply:follow-up"])],
         )
 
-    def _build_fake_active_chat(self, initial_messages: list[tuple[str, int, bool]]):
+    def _build_fake_active_chat(
+        self,
+        initial_messages: list[tuple[str, int, bool]],
+        *,
+        chat_label: str = "Alice",
+    ):
         class FakeElementInfo:
             def __init__(self, runtime_id: int) -> None:
                 self.runtime_id = runtime_id
@@ -371,7 +489,7 @@ class GlobalAutoReplyTests(unittest.TestCase):
 
         class FakeMainWindow:
             def __init__(self, messages: list[tuple[str, int, bool]]) -> None:
-                self.chat_label = FakeControl(text="Alice")
+                self.chat_label = FakeControl(text=chat_label)
                 self.chat_list = FakeControl(items=[FakeItem(text, runtime_id, mine) for text, runtime_id, mine in messages])
 
             def child_window(self, **kwargs):
@@ -382,6 +500,47 @@ class GlobalAutoReplyTests(unittest.TestCase):
                 raise AssertionError(f"unexpected child_window lookup: {kwargs}")
 
         return FakeMainWindow(initial_messages)
+
+    def test_processed_signatures_expire_and_allow_repeated_text_later(self) -> None:
+        sent_messages: list[tuple[str, list[str]]] = []
+        fake_main_window = self._build_fake_active_chat([("hello", 1, False)])
+        self.runtime.Navigator = types.SimpleNamespace(
+            open_dialog_window=lambda friend, is_maximize=False, search_pages=5: fake_main_window
+        )
+        self.runtime.Tools = types.SimpleNamespace(is_group_chat=lambda window: False)
+        self.runtime.Messages = types.SimpleNamespace(
+            pull_messages=lambda friend, number, close_weixin=False, search_pages=5: ["earlier-context"],
+            send_messages_to_friend=lambda friend, messages, close_weixin=False: sent_messages.append((friend, messages)),
+        )
+
+        now_values = iter([0.0, 10.0, 120.0])
+        self.runtime.time = types.SimpleNamespace(time=lambda: next(now_values))
+
+        app = self.build_app()
+        app.processed_signature_ttl_seconds = 60.0
+
+        first = app.process_unread_session("Alice", ["hello"])
+        second = app.process_unread_session("Alice", ["hello"])
+        third = app.process_unread_session("Alice", ["hello"])
+
+        self.assertEqual(first["friend_replies"], 1)
+        self.assertEqual(second["friend_replies"], 0)
+        self.assertEqual(third["friend_replies"], 1)
+        self.assertEqual(sent_messages, [("Alice", ["reply:hello"]), ("Alice", ["reply:hello"])])
+
+    def test_processed_signatures_are_capped_for_long_running_daemon(self) -> None:
+        app = self.build_app()
+        app.processed_signature_limit = 2
+        app.processed_signature_ttl_seconds = 3600.0
+
+        app._remember_processed_signature("one", now=1.0)
+        app._remember_processed_signature("two", now=2.0)
+        app._remember_processed_signature("three", now=3.0)
+
+        self.assertFalse(app._has_processed_signature("one", now=3.0))
+        self.assertTrue(app._has_processed_signature("two", now=3.0))
+        self.assertTrue(app._has_processed_signature("three", now=3.0))
+        self.assertLessEqual(len(app.processed_signatures), 2)
 
     def test_process_active_chat_session_bootstraps_existing_messages_without_reply(self) -> None:
         sent_messages: list[tuple[str, list[str]]] = []
@@ -429,6 +588,112 @@ class GlobalAutoReplyTests(unittest.TestCase):
         self.assertEqual(result["friend_replies"], 1)
         self.assertEqual(sent_messages, [("Alice", ["reply:new-message"])])
         self.assertEqual(app.active_pending_messages, [])
+
+    def test_process_active_chat_session_keeps_pending_batches_per_session_when_switching(self) -> None:
+        sent_messages: list[tuple[str, list[str]]] = []
+        alice_window = self._build_fake_active_chat([("old-a", 1, False)], chat_label="Alice")
+        bob_window = self._build_fake_active_chat([("old-b", 10, False)], chat_label="Bob")
+        current_window = {"window": alice_window}
+        self.runtime.Navigator = types.SimpleNamespace(open_weixin=lambda is_maximize=False: current_window["window"])
+        self.runtime.Tools = types.SimpleNamespace(
+            activate_chatList=lambda chat_list: None,
+            is_group_chat=lambda window: False,
+            is_my_bubble=lambda window, item: item.mine,
+        )
+        self.runtime.Messages = types.SimpleNamespace(
+            send_messages_to_friend=lambda friend, messages, close_weixin=False: sent_messages.append((friend, messages))
+        )
+
+        app = self.build_app()
+        app.active_merge_window = 3.0
+
+        app.process_active_chat_session(now=0.0)
+        alice_window.chat_list = self._build_fake_active_chat(
+            [("old-a", 1, False), ("alice-new", 2, False)],
+            chat_label="Alice",
+        ).chat_list
+        app.process_active_chat_session(now=1.0)
+
+        current_window["window"] = bob_window
+        app.process_active_chat_session(now=1.5)
+        self.assertEqual(sent_messages, [])
+
+        app.process_active_chat_session(now=3.9)
+        self.assertEqual(sent_messages, [])
+
+        result = app.process_active_chat_session(now=4.1)
+
+        self.assertEqual(result["friend_replies"], 1)
+        self.assertEqual(sent_messages, [("Alice", ["reply:alice-new"])])
+
+    def test_process_active_chat_session_reboots_anchor_when_previous_signature_is_missing(self) -> None:
+        sent_messages: list[tuple[str, list[str]]] = []
+        logged_events: list[dict[str, object]] = []
+        fake_main_window = self._build_fake_active_chat([("old-1", 1, False), ("old-2", 2, False)])
+        self.runtime.Navigator = types.SimpleNamespace(open_weixin=lambda is_maximize=False: fake_main_window)
+        self.runtime.Tools = types.SimpleNamespace(
+            activate_chatList=lambda chat_list: None,
+            is_group_chat=lambda window: False,
+            is_my_bubble=lambda window, item: item.mine,
+        )
+        self.runtime.Messages = types.SimpleNamespace(
+            send_messages_to_friend=lambda friend, messages, close_weixin=False: sent_messages.append((friend, messages))
+        )
+
+        app = self.build_app()
+        app.engine.event_logger = types.SimpleNamespace(
+            log_event=lambda event_type, **fields: logged_events.append({"event_type": event_type, **fields})
+        )
+        app.active_last_seen_signature_by_session["Alice"] = "missing|mmui::ChatTextItemView|gone"
+
+        result = app.process_active_chat_session(now=10.0)
+
+        self.assertEqual(result["friend_replies"], 0)
+        self.assertEqual(sent_messages, [])
+        self.assertEqual(app.active_pending_messages, [])
+        self.assertEqual(len([event for event in logged_events if event["event_type"] == "active_anchor_missed"]), 1)
+
+    def test_process_active_chat_session_passes_group_sender_to_reply_pipeline(self) -> None:
+        captured_messages: list[object] = []
+        sent_messages: list[tuple[str, list[str]]] = []
+        fake_main_window = self._build_fake_active_chat(
+            [("old", 1, False)],
+            chat_label="Project Group",
+        )
+        self.runtime.Navigator = types.SimpleNamespace(open_weixin=lambda is_maximize=False: fake_main_window)
+        self.runtime.Tools = types.SimpleNamespace(
+            activate_chatList=lambda chat_list: None,
+            is_group_chat=lambda window: True,
+            is_my_bubble=lambda window, item: item.mine,
+            parse_message_content=lambda ListItem, friendtype: ("Bob", ListItem.window_text(), "text"),
+        )
+        self.runtime.Messages = types.SimpleNamespace(
+            send_messages_to_friend=lambda friend, messages, close_weixin=False: sent_messages.append((friend, messages))
+        )
+
+        app = self.runtime.WeChatAIApp(
+            engine=types.SimpleNamespace(
+                context_limit=10,
+                generate_reply=lambda message: captured_messages.append(message) or "group-reply",
+            ),
+            fallback_reply="fallback",
+            mention_names=("me",),
+        )
+        app.active_merge_window = 3.0
+
+        app.process_active_chat_session(now=0.0)
+        fake_main_window.chat_list = self._build_fake_active_chat(
+            [("old", 1, False), ("@me help", 2, False)],
+            chat_label="Project Group",
+        ).chat_list
+        app.process_active_chat_session(now=1.0)
+        result = app.process_active_chat_session(now=4.5)
+
+        self.assertEqual(result["group_replies"], 1)
+        self.assertEqual(sent_messages, [("Project Group", ["group-reply"])])
+        self.assertEqual(len(captured_messages), 1)
+        self.assertEqual(captured_messages[0].chat_id, "Project Group")
+        self.assertEqual(captured_messages[0].sender_name, "Bob")
 
     def test_run_global_auto_reply_polls_and_aggregates_results(self) -> None:
         poll_results = [

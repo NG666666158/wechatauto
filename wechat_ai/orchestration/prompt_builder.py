@@ -17,12 +17,16 @@ class PromptBuilder:
         contexts: list[str],
         agent_profile: object | None = None,
         user_profile: object | None = None,
+        self_identity_profile: object | None = None,
+        self_identity: object | None = None,
         knowledge_chunks: list[str] | None = None,
         memory_summary: str | None = None,
     ) -> str:
+        identity_profile = self_identity_profile if self_identity_profile is not None else self_identity
         sections = [
             self._render_agent_profile_summary(agent_profile),
             self._render_user_profile_summary(user_profile),
+            self._render_self_identity_summary(identity_profile),
             self._render_recent_conversation_context(contexts),
             self._render_retrieved_knowledge(knowledge_chunks or []),
             self._render_memory_summary(memory_summary),
@@ -68,6 +72,25 @@ class PromptBuilder:
 
     def _render_recent_conversation_context(self, contexts: list[str]) -> str:
         return "## Recent Conversation Context\n" + render_context_block(contexts, limit=self.context_limit)
+
+    def _render_self_identity_summary(self, profile: object | None) -> str:
+        if profile is None:
+            return ""
+        summary = str(getattr(profile, "summary", "")).strip()
+        if summary:
+            return "## Self Identity Summary\n" + summary
+        lines = ["## Self Identity Summary"]
+        display_name = self._first_text(getattr(profile, "display_name", ""))
+        relationship = self._first_text(getattr(profile, "relationship", ""))
+        if display_name != "unknown":
+            lines.append(f"Name: {display_name}")
+        if relationship != "unknown":
+            lines.append(f"Relationship: {relationship}")
+        lines.append(self._render_list_line("Identity facts", getattr(profile, "identity_facts", [])))
+        lines.append(self._render_list_line("Constraints", getattr(profile, "constraints", [])))
+        lines.append(self._render_list_line("Style hints", getattr(profile, "style_hints", [])))
+        lines.append(self._render_list_line("Notes", getattr(profile, "notes", [])))
+        return "\n".join(lines)
 
     def _render_retrieved_knowledge(self, knowledge_chunks: list[str]) -> str:
         lines = ["## Retrieved Knowledge"]

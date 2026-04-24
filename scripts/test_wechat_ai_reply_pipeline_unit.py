@@ -199,6 +199,41 @@ class ReplyPipelineOrchestrationTests(unittest.TestCase):
         )
         self.assertEqual(logged_events[4]["prompt_preview"], "prompt::hello::Ali...(truncated)")
 
+    def test_generate_reply_passes_self_identity_profile_to_prompt_and_engine(self) -> None:
+        class FakeReplyEngine:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+                self.prompt_builder = types.SimpleNamespace(
+                    debug_preview=lambda **kwargs: f"prompt::{getattr(kwargs['self_identity_profile'], 'relationship', '')}"
+                )
+
+            def generate_friend_reply(self, latest_message: str, contexts: list[str], **kwargs: object) -> str:
+                self.calls.append(kwargs)
+                return "friend-reply"
+
+        class FakeSelfIdentityResolver:
+            def resolve(self, **kwargs: object):
+                return types.SimpleNamespace(
+                    relationship="teacher",
+                    summary="事实: 我是 2023 级学生",
+                    identity_facts=["我是 2023 级学生"],
+                )
+
+        engine = FakeReplyEngine()
+        pipeline = ReplyPipeline(
+            provider=object(),
+            prompts=ScenePrompts(friend_system_prompt="friend", group_system_prompt="group"),
+            reply_engine=engine,
+            self_identity_resolver=FakeSelfIdentityResolver(),
+        )
+
+        reply = pipeline.generate_reply(
+            Message(chat_id="alice-chat", chat_type="friend", sender_name="Alice", text="hello", relationship_to_me="teacher")
+        )
+
+        self.assertEqual(reply, "friend-reply")
+        self.assertEqual(engine.calls[0]["self_identity_profile"].relationship, "teacher")
+
     def test_generate_reply_accepts_message_like_mapping_for_group_messages(self) -> None:
         class FakeProfileStore:
             def __init__(self) -> None:
@@ -252,6 +287,244 @@ class ReplyPipelineOrchestrationTests(unittest.TestCase):
         self.assertEqual(engine.calls[0]["contexts"], ["ctx-1", "ctx-2"])
         self.assertEqual(engine.calls[0]["knowledge_chunks"], [])
         self.assertEqual(engine.calls[0]["memory_summary"], None)
+
+    def test_generate_reply_resolves_self_identity_and_passes_it_to_preview_and_engine(self) -> None:
+        logged_events: list[dict[str, object]] = []
+
+        class FakeProfileStore:
+            def load_user_profile(self, user_id: str):
+                return types.SimpleNamespace(user_id=user_id, display_name="Alice", tags=["teacher"])
+
+            def load_agent_profile(self, agent_id: str):
+                return types.SimpleNamespace(agent_id=agent_id, display_name="Assistant")
+
+        class FakeSelfIdentityResolver:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            def resolve(self, *, message: Message, user_profile: object, agent_profile: object):
+                self.calls.append(
+                    {
+                        "message": message,
+                        "user_profile": user_profile,
+                        "agent_profile": agent_profile,
+                    }
+                )
+                return types.SimpleNamespace(
+                    summary="我是她的学生，需要保持礼貌和明确。",
+                    relationship="teacher",
+                )
+
+        class FakeReplyEngine:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+                self.prompt_builder = types.SimpleNamespace(
+                    debug_preview=lambda **kwargs: (
+                        f"preview::{kwargs['latest_message']}::{getattr(kwargs.get('self_identity'), 'summary', '')}"
+                    )
+                )
+
+            def generate_friend_reply(self, latest_message: str, contexts: list[str], **kwargs: object) -> str:
+                self.calls.append(
+                    {
+                        "latest_message": latest_message,
+                        "contexts": list(contexts),
+                        **kwargs,
+                    }
+                )
+                return "friend-reply"
+
+        class FakeLogger:
+            def log_event(self, event_type: str, **fields: object) -> None:
+                logged_events.append({"event_type": event_type, **fields})
+
+        resolver = FakeSelfIdentityResolver()
+        engine = FakeReplyEngine()
+        pipeline = ReplyPipeline(
+            provider=object(),
+            prompts=ScenePrompts(friend_system_prompt="friend", group_system_prompt="group"),
+            profile_store=FakeProfileStore(),
+            active_agent_id="assistant-1",
+            reply_engine=engine,
+            self_identity_resolver=resolver,
+            event_logger=FakeLogger(),
+            prompt_preview_max_chars=80,
+        )
+
+        reply = pipeline.generate_reply(
+            Message(
+                chat_id="alice-chat",
+                chat_type="friend",
+                sender_name="Alice",
+                text="老师您好",
+                context=["早上好"],
+                resolved_user_id="alice_user",
+                relationship_to_me="teacher",
+            )
+        )
+
+        self.assertEqual(reply, "friend-reply")
+        self.assertEqual(len(resolver.calls), 1)
+        self.assertEqual(resolver.calls[0]["message"].resolved_user_id, "alice_user")
+        self.assertEqual(getattr(resolver.calls[0]["user_profile"], "display_name"), "Alice")
+        self.assertEqual(getattr(resolver.calls[0]["agent_profile"], "agent_id"), "assistant-1")
+        self.assertEqual(getattr(engine.calls[0]["self_identity"], "relationship"), "teacher")
+        self.assertEqual(
+            getattr(engine.calls[0]["self_identity"], "summary"),
+            "我是她的学生，需要保持礼貌和明确。",
+        )
+        self.assertEqual(
+            logged_events[3]["event_type"],
+            "self_identity_resolved",
+        )
+        self.assertIn("我是她的学生", str(logged_events[4]["prompt_preview"]))
+
+    def test_generate_reply_prefers_user_and_conversation_memory_for_group_messages(self) -> None:
+        load_calls: list[tuple[str, str]] = []
+        append_calls: list[tuple[str, str, list[str]]] = []
+
+        class FakeContextManager:
+            def prepare_message(self, message: Message) -> Message:
+                return Message(
+                    chat_id=message.chat_id,
+                    chat_type=message.chat_type,
+                    sender_name=message.sender_name,
+                    text=message.text,
+                    timestamp=message.timestamp,
+                    context=["trimmed-group-context"],
+                )
+
+        class FakeReplyEngine:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+                self.prompt_builder = types.SimpleNamespace(debug_preview=lambda **kwargs: "preview")
+
+            def generate_group_reply(self, latest_message: str, contexts: list[str], **kwargs: object) -> str:
+                self.calls.append(
+                    {
+                        "latest_message": latest_message,
+                        "contexts": contexts,
+                        **kwargs,
+                    }
+                )
+                return "group-reply"
+
+        class FakeMemoryStore:
+            def load_user_summary_text(self, user_id: str) -> str:
+                load_calls.append(("user", user_id))
+                return "User memory: prefers bullet points."
+
+            def load_conversation_summary_text(self, conversation_id: str) -> str:
+                load_calls.append(("conversation", conversation_id))
+                return "Conversation memory: weekly sync thread."
+
+            def append_user_snapshot(self, user_id: str, messages: list[str]) -> None:
+                append_calls.append(("user", user_id, list(messages)))
+
+            def append_conversation_snapshot(self, conversation_id: str, messages: list[str]) -> None:
+                append_calls.append(("conversation", conversation_id, list(messages)))
+
+        engine = FakeReplyEngine()
+        pipeline = ReplyPipeline(
+            provider=object(),
+            prompts=ScenePrompts(friend_system_prompt="friend", group_system_prompt="group"),
+            context_manager=FakeContextManager(),
+            reply_engine=engine,
+            memory_store=FakeMemoryStore(),
+        )
+
+        reply = pipeline.generate_reply(
+            Message(
+                chat_id="project-room",
+                chat_type="group",
+                sender_name="Bob",
+                text="@bot sync status?",
+                context=["older-group-context"],
+                resolved_user_id="user_bob",
+                conversation_id="group:project-room",
+            )
+        )
+
+        self.assertEqual(reply, "group-reply")
+        self.assertEqual(
+            load_calls,
+            [
+                ("user", "user_bob"),
+                ("conversation", "group:project-room"),
+            ],
+        )
+        self.assertEqual(
+            engine.calls[0]["memory_summary"],
+            "User memory: prefers bullet points.\n\nConversation memory: weekly sync thread.",
+        )
+        self.assertEqual(
+            append_calls,
+            [
+                ("user", "user_bob", ["trimmed-group-context", "@bot sync status?", "group-reply"]),
+                (
+                    "conversation",
+                    "group:project-room",
+                    ["trimmed-group-context", "@bot sync status?", "group-reply"],
+                ),
+            ],
+        )
+
+    def test_generate_reply_falls_back_to_legacy_chat_memory_store_when_new_methods_are_missing(self) -> None:
+        class FakeReplyEngine:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+                self.prompt_builder = types.SimpleNamespace(debug_preview=lambda **kwargs: "preview")
+
+            def generate_friend_reply(self, latest_message: str, contexts: list[str], **kwargs: object) -> str:
+                self.calls.append(
+                    {
+                        "latest_message": latest_message,
+                        "contexts": contexts,
+                        **kwargs,
+                    }
+                )
+                return "friend-reply"
+
+        class LegacyMemoryStore:
+            def __init__(self) -> None:
+                self.loaded_ids: list[str] = []
+                self.snapshot_calls: list[tuple[str, list[str]]] = []
+
+            def load_summary_text(self, chat_id: str) -> str:
+                self.loaded_ids.append(chat_id)
+                return f"legacy-summary:{chat_id}"
+
+            def append_snapshot(self, chat_id: str, messages: list[str]) -> None:
+                self.snapshot_calls.append((chat_id, list(messages)))
+
+        memory_store = LegacyMemoryStore()
+        engine = FakeReplyEngine()
+        pipeline = ReplyPipeline(
+            provider=object(),
+            prompts=ScenePrompts(friend_system_prompt="friend", group_system_prompt="group"),
+            reply_engine=engine,
+            memory_store=memory_store,
+        )
+
+        reply = pipeline.generate_reply(
+            Message(
+                chat_id="alice-chat",
+                chat_type="friend",
+                sender_name="Alice",
+                text="hello again",
+                context=["ctx-1"],
+                resolved_user_id="user_alice",
+                conversation_id="friend:alice-chat",
+            )
+        )
+
+        self.assertEqual(reply, "friend-reply")
+        self.assertEqual(memory_store.loaded_ids, ["alice-chat"])
+        self.assertEqual(engine.calls[0]["memory_summary"], "legacy-summary:alice-chat")
+        self.assertEqual(
+            memory_store.snapshot_calls,
+            [("alice-chat", ["ctx-1", "hello again", "friend-reply"])],
+        )
 
     def test_generate_reply_writes_logs_and_updates_memory_store_end_to_end(self) -> None:
         temp_root = ROOT / ".tmp_observability_e2e" / str(uuid4())

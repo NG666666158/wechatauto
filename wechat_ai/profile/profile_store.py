@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from ..paths import AGENTS_DIR, USERS_DIR
+from ..storage_names import safe_storage_name
 from .tag_manager import TagManager
 
 
@@ -45,18 +46,21 @@ class _FallbackAgentProfile:
 
 
 class ProfileStore:
-    def __init__(self, base_dir: Path | None = None) -> None:
+    def __init__(self, base_dir: Path | None = None, *, auto_create: bool | None = None) -> None:
         root_dir = Path(base_dir) if base_dir is not None else Path(__file__).resolve().parents[1] / "data"
         self.base_dir = root_dir
         self.user_profiles_dir = self.base_dir / USERS_DIR.name
         self.agent_profiles_dir = self.base_dir / AGENTS_DIR.name
+        self.auto_create = self._load_auto_create_setting() if auto_create is None else auto_create
 
     def load_user_profile(self, user_id: str) -> Any:
         profile_type = self._load_user_profile_type()
-        profile_path = self.user_profiles_dir / f"{user_id}.json"
-        payload = self._read_or_create(profile_path, lambda: self._default_user_payload(profile_type, user_id))
+        profile_path = self._user_profile_path(user_id)
+        existed = profile_path.exists()
+        payload = self._read_or_default(profile_path, lambda: self._default_user_payload(profile_type, user_id))
         profile = self._build_profile(profile_type, payload, defaults=self._default_user_payload(profile_type, user_id))
-        self.save_user_profile(profile)
+        if existed or self.auto_create:
+            self.save_user_profile(profile)
         return profile
 
     def save_user_profile(self, profile: Any) -> None:
@@ -64,14 +68,16 @@ class ProfileStore:
         payload = self._profile_to_payload(profile)
         payload["tags"] = TagManager.normalize(self._coerce_string_list(payload.get("tags")))
         user_id = str(payload.get("user_id") or getattr(profile, "user_id"))
-        self._write_json(self.user_profiles_dir / f"{user_id}.json", payload)
+        self._write_json(self._user_profile_path(user_id), payload)
 
     def load_agent_profile(self, agent_id: str) -> Any:
         profile_type = self._load_agent_profile_type()
-        profile_path = self.agent_profiles_dir / f"{agent_id}.json"
-        payload = self._read_or_create(profile_path, lambda: self._default_agent_payload(profile_type, agent_id))
+        profile_path = self._agent_profile_path(agent_id)
+        existed = profile_path.exists()
+        payload = self._read_or_default(profile_path, lambda: self._default_agent_payload(profile_type, agent_id))
         profile = self._build_profile(profile_type, payload, defaults=self._default_agent_payload(profile_type, agent_id))
-        self.save_agent_profile(profile)
+        if existed or self.auto_create:
+            self.save_agent_profile(profile)
         return profile
 
     def save_agent_profile(self, profile: Any) -> None:
@@ -80,7 +86,14 @@ class ProfileStore:
         for key in ("style_rules", "goals", "forbidden_rules"):
             payload[key] = self._coerce_string_list(payload.get(key))
         agent_id = str(payload.get("agent_id") or getattr(profile, "agent_id"))
-        self._write_json(self.agent_profiles_dir / f"{agent_id}.json", payload)
+        self._write_json(self._agent_profile_path(agent_id), payload)
+
+    def _load_auto_create_setting(self) -> bool:
+        try:
+            from wechat_ai.config import ProfileSettings
+        except ImportError:
+            return True
+        return ProfileSettings.from_env().profile_auto_create
 
     def _load_user_profile_type(self) -> type[Any]:
         try:
@@ -96,11 +109,9 @@ class ProfileStore:
             return _FallbackAgentProfile
         return AgentProfile
 
-    def _read_or_create(self, path: Path, default_factory: Any) -> dict[str, Any]:
+    def _read_or_default(self, path: Path, default_factory: Any) -> dict[str, Any]:
         if not path.exists():
-            payload = default_factory()
-            self._write_json(path, payload)
-            return payload
+            return default_factory()
         with path.open("r", encoding="utf-8") as handle:
             return json.load(handle)
 
@@ -165,3 +176,11 @@ class ProfileStore:
         if not isinstance(value, list):
             return []
         return [item for item in value if isinstance(item, str)]
+
+    def _user_profile_path(self, user_id: str) -> Path:
+        safe_name = safe_storage_name(user_id, fallback="unknown_user")
+        return self.user_profiles_dir / f"{safe_name}.json"
+
+    def _agent_profile_path(self, agent_id: str) -> Path:
+        safe_name = safe_storage_name(agent_id, fallback="unknown_agent")
+        return self.agent_profiles_dir / f"{safe_name}.json"

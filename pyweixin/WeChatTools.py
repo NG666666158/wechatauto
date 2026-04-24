@@ -170,10 +170,20 @@ class Tools():
         该方法通过检测当前windows系统的进程中
         是否有Weixin.exe该项进程来判断微信是否在运行
         '''
-        wmi=win32com.client.GetObject('winmgmts:')
-        processes=wmi.InstancesOf('Win32_Process')
-        for process in processes:
-            if process.Name.lower()=='Weixin.exe'.lower():
+        try:
+            wmi=win32com.client.GetObject('winmgmts:')
+            processes=wmi.InstancesOf('Win32_Process')
+            for process in processes:
+                if process.Name.lower()=='Weixin.exe'.lower():
+                    return True
+        except Exception:
+            pass
+        for process in psutil.process_iter(['name']):
+            try:
+                process_name = process.info.get('name') or ''
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+            if process_name.lower()=='Weixin.exe'.lower():
                 return True
         return False
     
@@ -188,11 +198,24 @@ class Tools():
         #执行顺序 正在运行->查询注册表
         if Tools.is_weixin_running():
             weixin_path=''
-            wmi=win32com.client.GetObject('winmgmts:')
-            processes=wmi.InstancesOf('Win32_Process')
-            for process in processes:
-                if process.Name.lower()=='Weixin.exe'.lower():
-                    weixin_path=process.ExecutablePath
+            try:
+                wmi=win32com.client.GetObject('winmgmts:')
+                processes=wmi.InstancesOf('Win32_Process')
+                for process in processes:
+                    if process.Name.lower()=='Weixin.exe'.lower():
+                        weixin_path=process.ExecutablePath
+            except Exception:
+                weixin_path=''
+            if not weixin_path:
+                for process in psutil.process_iter(['name','exe']):
+                    try:
+                        process_name = process.info.get('name') or ''
+                        executable_path = process.info.get('exe') or ''
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+                    if process_name.lower()=='Weixin.exe'.lower() and executable_path:
+                        weixin_path=executable_path
+                        break
             if weixin_path:
                 #规范化路径并检查文件是否存在
                 weixin_path=os.path.abspath(weixin_path)

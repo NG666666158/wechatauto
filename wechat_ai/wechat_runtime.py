@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import time
+from collections import Counter
 from dataclasses import dataclass
 from dataclasses import field
 
@@ -14,8 +15,10 @@ from pyweixin.Uielements import Texts as _Texts
 from pyweixin.WinSettings import SystemSettings
 
 from .config import MiniMaxSettings, ProfileSettings, ReplySettings
+from .identity import IdentityRawSignal, IdentityResolver
 from .logging_utils import JsonlEventLogger
 from .memory.memory_store import MemoryStore
+from .message_queue import IncomingMessageEvent, MessageEventQueue
 from .minimax_provider import MiniMaxProvider
 from .models import Message
 from .orchestration.reply_pipeline import ReplyPipeline, ScenePrompts
@@ -23,6 +26,7 @@ from .paths import KNOWLEDGE_DIR, LOGS_DIR, MEMORY_DIR, bootstrap_data_dirs
 from .profile.profile_store import ProfileStore
 from .rag.embeddings import FakeEmbeddings
 from .rag.retriever import LocalIndexRetriever
+from .reply_scheduler import PendingReplyBatch, ReplyScheduler
 
 
 Edits = _Edits() if callable(_Edits) else _Edits
@@ -50,6 +54,10 @@ def _build_memory_store():
 
 def _build_event_logger():
     return JsonlEventLogger(path=LOGS_DIR / "runtime_events.jsonl")
+
+
+def _build_identity_resolver():
+    return IdentityResolver(repository=None, event_logger=_build_event_logger())
 
 
 def _build_reply_pipeline(provider, minimax: MiniMaxSettings, reply: ReplySettings, profile: ProfileSettings):
@@ -84,15 +92,23 @@ class WeChatAIApp:
     engine: ReplyPipeline
     fallback_reply: str
     mention_names: tuple[str, ...]
-    processed_signatures: set[str] = field(default_factory=set)
+    processed_signatures: dict[str, float] = field(default_factory=dict)
+    processed_signature_ttl_seconds: float = 1800.0
+    processed_signature_limit: int = 1000
     debug: bool = False
     active_merge_window: float = 3.0
     active_pending_session: str | None = None
     active_pending_is_group: bool = False
+    active_pending_sender_name: str | None = None
     active_pending_messages: list[str] = field(default_factory=list)
     active_pending_contexts: list[str] = field(default_factory=list)
     active_pending_deadline: float | None = None
     active_last_seen_signature_by_session: dict[str, str] = field(default_factory=dict)
+    message_queue: MessageEventQueue = field(default_factory=MessageEventQueue)
+    reply_scheduler: ReplyScheduler = field(
+        default_factory=lambda: ReplyScheduler(merge_window_seconds=3.0)
+    )
+    identity_resolver: IdentityResolver = field(default_factory=_build_identity_resolver)
 
     @classmethod
     def from_env(cls) -> "WeChatAIApp":
@@ -286,6 +302,50 @@ class WeChatAIApp:
     def _build_merged_message(self, messages: list[str]) -> str:
         return "\n".join(message.strip() for message in messages if message.strip())
 
+    def _order_unread_messages(self, unread_messages: list[str], contexts: list[str]) -> list[str]:
+        cleaned_messages = [message.strip() for message in unread_messages if isinstance(message, str) and message.strip()]
+        if len(cleaned_messages) <= 1:
+            return cleaned_messages
+
+        context_timeline = [message.strip() for message in contexts if isinstance(message, str) and message.strip()]
+        if len(context_timeline) < len(cleaned_messages):
+            return cleaned_messages
+
+        remaining = Counter(cleaned_messages)
+        ordered_messages: list[str] = []
+        for context_message in context_timeline:
+            if remaining.get(context_message, 0) <= 0:
+                continue
+            ordered_messages.append(context_message)
+            remaining[context_message] -= 1
+
+        if len(ordered_messages) != len(cleaned_messages):
+            return cleaned_messages
+        return ordered_messages
+
+    def _cleanup_processed_signatures(self, now: float) -> None:
+        if isinstance(self.processed_signatures, set):
+            self.processed_signatures = {signature: now for signature in self.processed_signatures}
+        if self.processed_signature_ttl_seconds > 0:
+            cutoff = now - self.processed_signature_ttl_seconds
+            self.processed_signatures = {
+                signature: timestamp
+                for signature, timestamp in self.processed_signatures.items()
+                if timestamp >= cutoff
+            }
+        if self.processed_signature_limit > 0 and len(self.processed_signatures) > self.processed_signature_limit:
+            ordered = sorted(self.processed_signatures.items(), key=lambda item: item[1])
+            self.processed_signatures = dict(ordered[-self.processed_signature_limit :])
+
+    def _has_processed_signature(self, signature: str, now: float) -> bool:
+        self._cleanup_processed_signatures(now)
+        return signature in self.processed_signatures
+
+    def _remember_processed_signature(self, signature: str, now: float) -> None:
+        self._cleanup_processed_signatures(now)
+        self.processed_signatures[signature] = now
+        self._cleanup_processed_signatures(now)
+
     def _snapshot_latest_visible_signature(self, main_window, session_name: str) -> None:
         if not hasattr(main_window, "child_window"):
             return
@@ -299,18 +359,63 @@ class WeChatAIApp:
             return
         self.active_last_seen_signature_by_session[session_name] = self._item_signature(items[-1])
 
-    def _send_reply(self, session_name: str, message_text: str, contexts: list[str], is_group: bool) -> dict[str, int]:
+    def _build_identity_signal(
+        self,
+        *,
+        session_name: str,
+        message_text: str,
+        contexts: list[str],
+        is_group: bool,
+        sender_name: str | None = None,
+    ) -> IdentityRawSignal:
+        participant_name = sender_name or session_name
+        return IdentityRawSignal(
+            conversation_id=f"{'group' if is_group else 'friend'}:{session_name}",
+            chat_type="group" if is_group else "friend",
+            display_name=participant_name,
+            sender_name=participant_name,
+            group_name=session_name if is_group else None,
+            text=message_text,
+            contexts=list(contexts),
+        )
+
+    def _send_reply(
+        self,
+        session_name: str,
+        message_text: str,
+        contexts: list[str],
+        is_group: bool,
+        *,
+        sender_name: str | None = None,
+    ) -> dict[str, int]:
         result = {"friend_replies": 0, "group_replies": 0, "errors": 0}
         if not message_text.strip():
             return result
+        identity_result = self.identity_resolver.resolve(
+            self._build_identity_signal(
+                session_name=session_name,
+                message_text=message_text,
+                contexts=contexts,
+                is_group=is_group,
+                sender_name=sender_name,
+            )
+        )
         try:
             reply = self._generate_reply_message(
                 Message(
                     chat_id=session_name,
                     chat_type="group" if is_group else "friend",
-                    sender_name=session_name,
+                    sender_name=sender_name or session_name,
                     text=message_text,
                     context=contexts,
+                    resolved_user_id=identity_result.resolved_user_id,
+                    conversation_id=identity_result.conversation_id,
+                    participant_display_name=identity_result.participant_display_name,
+                    relationship_to_me=identity_result.relationship_to_me,
+                    current_intent=identity_result.current_intent,
+                    identity_confidence=identity_result.identity_confidence,
+                    identity_status=identity_result.identity_status,
+                    identity_evidence=list(identity_result.evidence),
                 )
             )
             reply = reply or self.fallback_reply
@@ -366,6 +471,7 @@ class WeChatAIApp:
         pending_session = self.active_pending_session
         pending_messages = list(self.active_pending_messages)
         pending_is_group = self.active_pending_is_group
+        pending_sender_name = self.active_pending_sender_name
         try:
             merged_message = self._build_merged_message(self.active_pending_messages)
             if merged_message:
@@ -374,6 +480,7 @@ class WeChatAIApp:
                     message_text=merged_message,
                     contexts=self.active_pending_contexts,
                     is_group=self.active_pending_is_group,
+                    sender_name=pending_sender_name,
                 )
                 result["friend_replies"] += send_result["friend_replies"]
                 result["group_replies"] += send_result["group_replies"]
@@ -392,9 +499,57 @@ class WeChatAIApp:
         finally:
             self.active_pending_session = None
             self.active_pending_is_group = False
+            self.active_pending_sender_name = None
             self.active_pending_messages = []
             self.active_pending_contexts = []
             self.active_pending_deadline = None
+        return result
+
+    def _send_reply_batch(
+        self,
+        batch: PendingReplyBatch,
+        *,
+        force: bool = False,
+        reason: str | None = None,
+    ) -> dict[str, int]:
+        is_group = batch.chat_type == "group"
+        send_result = self._send_reply(
+            session_name=batch.session_name,
+            message_text=self._build_merged_message(batch.messages),
+            contexts=batch.contexts,
+            is_group=is_group,
+            sender_name=batch.sender_name,
+        )
+        if force:
+            self._log_event(
+                "shutdown_flush",
+                chat_id=batch.session_name,
+                chat_type=batch.chat_type,
+                pending_count=len(batch.messages),
+                reason=reason or "shutdown",
+            )
+        return send_result
+
+    def _drain_reply_scheduler(self, now: float) -> dict[str, int]:
+        result = {"friend_replies": 0, "group_replies": 0, "errors": 0}
+        for batch in self.reply_scheduler.drain_ready(now):
+            send_result = self._send_reply_batch(batch)
+            result["friend_replies"] += send_result["friend_replies"]
+            result["group_replies"] += send_result["group_replies"]
+            result["errors"] += send_result["errors"]
+        return result
+
+    def _flush_reply_scheduler(
+        self,
+        *,
+        reason: str = "shutdown",
+    ) -> dict[str, int]:
+        result = {"friend_replies": 0, "group_replies": 0, "errors": 0}
+        for batch in self.reply_scheduler.flush_all(reason=reason):
+            send_result = self._send_reply_batch(batch, force=True, reason=reason)
+            result["friend_replies"] += send_result["friend_replies"]
+            result["group_replies"] += send_result["group_replies"]
+            result["errors"] += send_result["errors"]
         return result
 
     def process_unread_session(self, session_name: str, unread_messages: list[str]) -> dict[str, int]:
@@ -420,20 +575,22 @@ class WeChatAIApp:
             )
             if not contexts:
                 contexts = list(unread_messages)
+            ordered_unread_messages = self._order_unread_messages(unread_messages, contexts)
             pending_messages: list[str] = []
             pending_signatures: list[str] = []
-            for unread_message in unread_messages:
+            now = time.time()
+            for unread_message in ordered_unread_messages:
                 if not isinstance(unread_message, str):
                     continue
                 text = unread_message.strip()
                 if not text:
                     continue
                 signature = f"{session_name}\0unread\0{text}"
-                if signature in self.processed_signatures:
+                if self._has_processed_signature(signature, now):
                     continue
                 if is_group and not self._is_group_mention(text):
                     self._debug(f"skip group unread without mention session={session_name!r} text={text!r}")
-                    self.processed_signatures.add(signature)
+                    self._remember_processed_signature(signature, now)
                     continue
                 pending_messages.append(text)
                 pending_signatures.append(signature)
@@ -452,7 +609,7 @@ class WeChatAIApp:
             result["group_replies"] += send_result["group_replies"]
             result["errors"] += send_result["errors"]
             for signature in pending_signatures:
-                self.processed_signatures.add(signature)
+                self._remember_processed_signature(signature, now)
             return result
         except Exception as exc:
             self._debug(f"process_unread_session failed session={session_name!r} error={type(exc).__name__}: {exc}")
@@ -479,7 +636,25 @@ class WeChatAIApp:
             pass
         return f"{runtime_id}|{class_name}|{text}"
 
-    def _collect_active_incoming_messages(self, main_window, session_name: str) -> tuple[bool, list[str], list[str]]:
+    def _parse_incoming_item(self, main_window, item, is_group: bool) -> tuple[str, str]:
+        if not is_group:
+            return item.window_text().strip(), ""
+        try:
+            message_sender, message_content, _message_type = Tools.parse_message_content(
+                ListItem=item,
+                friendtype="群聊",
+            )
+            return str(message_content).strip(), self._normalize_group_sender_name("", str(message_sender))
+        except Exception as exc:
+            self._debug(f"parse active group item failed error={type(exc).__name__}: {exc}")
+            return item.window_text().strip(), ""
+
+    def _collect_active_incoming_messages(
+        self,
+        main_window,
+        session_name: str,
+        captured_at: float,
+    ) -> tuple[bool, list[IncomingMessageEvent], list[str], str | None]:
         chat_list = main_window.child_window(**Lists.FriendChatList)
         if hasattr(Tools, "activate_chatList"):
             try:
@@ -488,27 +663,41 @@ class WeChatAIApp:
                 self._debug(f"activate_chatList failed session={session_name!r} error={type(exc).__name__}: {exc}")
         items = chat_list.children(control_type="ListItem")
         if not items:
-            return False, [], []
+            return False, [], [], None
 
         is_group = Tools.is_group_chat(main_window)
+        chat_type = "group" if is_group else "friend"
         contexts = [item.window_text() for item in items if item.window_text().strip()]
         latest_signature = self._item_signature(items[-1])
         previous_signature = self.active_last_seen_signature_by_session.get(session_name)
         if previous_signature is None:
             self.active_last_seen_signature_by_session[session_name] = latest_signature
             self._debug(f"bootstrap active session={session_name!r} visible_items={len(items)} latest_signature={latest_signature!r}")
-            return is_group, [], contexts
+            return is_group, [], contexts, None
         candidate_items: list[object] = []
+        found_previous = False
         for item in reversed(items):
             signature = self._item_signature(item)
             if signature == previous_signature:
+                found_previous = True
                 break
             candidate_items.append(item)
         self.active_last_seen_signature_by_session[session_name] = latest_signature
+        if not found_previous:
+            self._debug(f"active anchor missed session={session_name!r} previous_signature={previous_signature!r}")
+            self._log_event(
+                "active_anchor_missed",
+                chat_id=session_name,
+                previous_signature=previous_signature,
+                latest_signature=latest_signature,
+                visible_items=len(items),
+            )
+            return is_group, [], contexts, None
 
-        new_messages: list[str] = []
+        events: list[IncomingMessageEvent] = []
+        sender_name: str | None = None
         for item in reversed(candidate_items):
-            text = item.window_text().strip()
+            text, parsed_sender_name = self._parse_incoming_item(main_window, item, is_group)
             if not text:
                 continue
             if item.class_name() != "mmui::ChatTextItemView":
@@ -518,8 +707,22 @@ class WeChatAIApp:
             if is_group and not self._is_group_mention(text):
                 self._debug(f"active group skip without mention session={session_name!r} text={text!r}")
                 continue
-            new_messages.append(text)
-        return is_group, new_messages, contexts
+            if is_group and parsed_sender_name and sender_name is None:
+                sender_name = parsed_sender_name
+            event_sender_name = parsed_sender_name if is_group else session_name
+            events.append(
+                IncomingMessageEvent(
+                    session_name=session_name,
+                    chat_type=chat_type,
+                    text=text,
+                    contexts=contexts,
+                    sender_name=event_sender_name,
+                    source="active",
+                    signature=f"{session_name}\0active\0{self._item_signature(item)}",
+                    captured_at=captured_at,
+                )
+            )
+        return is_group, events, contexts, sender_name
 
     def process_active_chat_session(self, now: float | None = None) -> dict[str, int]:
         result = {"friend_replies": 0, "group_replies": 0, "errors": 0}
@@ -528,33 +731,54 @@ class WeChatAIApp:
 
         current_session_name: str | None = None
         try:
+            drain_result = self._drain_reply_scheduler(now)
+            result["friend_replies"] += drain_result["friend_replies"]
+            result["group_replies"] += drain_result["group_replies"]
+            result["errors"] += drain_result["errors"]
+
             main_window = Navigator.open_weixin(is_maximize=False)
             current_chat_label = main_window.child_window(**Texts.CurrentChatText)
             if hasattr(current_chat_label, "exists") and not current_chat_label.exists(timeout=0.1):
-                return self._flush_active_pending(now=now)
+                flush_result = self._flush_active_pending(now=now)
+                result["friend_replies"] += flush_result["friend_replies"]
+                result["group_replies"] += flush_result["group_replies"]
+                result["errors"] += flush_result["errors"]
+                return result
 
             current_session_name = current_chat_label.window_text().strip()
             if not current_session_name:
-                return self._flush_active_pending(now=now)
+                flush_result = self._flush_active_pending(now=now)
+                result["friend_replies"] += flush_result["friend_replies"]
+                result["group_replies"] += flush_result["group_replies"]
+                result["errors"] += flush_result["errors"]
+                return result
 
-            flush_result = self._flush_active_pending(now=now, current_session_name=current_session_name)
-            result["friend_replies"] += flush_result["friend_replies"]
-            result["group_replies"] += flush_result["group_replies"]
-            result["errors"] += flush_result["errors"]
+            self.reply_scheduler.merge_window_seconds = self.active_merge_window
+            _is_group, events, _contexts, _sender_name = self._collect_active_incoming_messages(
+                main_window,
+                current_session_name,
+                captured_at=now,
+            )
+            accepted = self.message_queue.enqueue_many(events)
+            if accepted:
+                self._debug(f"active session={current_session_name!r} queued_events={accepted}")
+            ready_batches = self.message_queue.drain_ready(now)
+            for batch in ready_batches:
+                scheduled = self.reply_scheduler.add_message(
+                    session_name=batch.session_name,
+                    chat_type=batch.chat_type,
+                    text=batch.text,
+                    contexts=batch.contexts,
+                    sender_name=batch.sender_name,
+                    now=now,
+                )
+                for ready in scheduled:
+                    send_result = self._send_reply_batch(ready)
+                    result["friend_replies"] += send_result["friend_replies"]
+                    result["group_replies"] += send_result["group_replies"]
+                    result["errors"] += send_result["errors"]
 
-            is_group, new_messages, contexts = self._collect_active_incoming_messages(main_window, current_session_name)
-            if new_messages:
-                self._debug(f"active session={current_session_name!r} buffered_messages={new_messages!r}")
-                if self.active_pending_session != current_session_name:
-                    self.active_pending_session = current_session_name
-                    self.active_pending_is_group = is_group
-                    self.active_pending_messages = []
-                self.active_pending_contexts = contexts
-                self.active_pending_is_group = is_group
-                self.active_pending_messages.extend(new_messages)
-                self.active_pending_deadline = now + self.active_merge_window
-
-            flush_result = self._flush_active_pending(now=now, current_session_name=current_session_name)
+            flush_result = self._drain_reply_scheduler(now)
             result["friend_replies"] += flush_result["friend_replies"]
             result["group_replies"] += flush_result["group_replies"]
             result["errors"] += flush_result["errors"]
@@ -651,6 +875,10 @@ class WeChatAIApp:
                 )
                 time.sleep(backoff_seconds)
 
+        flush_result = self._flush_reply_scheduler(reason="shutdown")
+        stats["friend_replies"] += flush_result["friend_replies"]
+        stats["group_replies"] += flush_result["group_replies"]
+        stats["errors"] += flush_result["errors"]
         flush_result = self._flush_active_pending(now=time.time(), force=True, reason="shutdown")
         stats["friend_replies"] += flush_result["friend_replies"]
         stats["group_replies"] += flush_result["group_replies"]

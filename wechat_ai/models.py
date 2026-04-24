@@ -11,6 +11,14 @@ class Message:
     text: str
     timestamp: str | None = None
     context: list[str] = field(default_factory=list)
+    resolved_user_id: str | None = None
+    conversation_id: str | None = None
+    participant_display_name: str | None = None
+    relationship_to_me: str | None = None
+    current_intent: str | None = None
+    identity_confidence: float | None = None
+    identity_status: str | None = None
+    identity_evidence: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)

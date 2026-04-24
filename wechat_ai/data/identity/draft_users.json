@@ -1,0 +1,62 @@
+[
+  {
+    "draft_user_id": "draft_f6792f2701d4",
+    "proposed_name": "Alice",
+    "proposed_user_type": "未知",
+    "current_intent": "未知",
+    "relationship_to_me": "未知",
+    "confidence": 0.35,
+    "source_signals": [
+      "new_conversation_no_alias_hit"
+    ],
+    "status": "draft",
+    "conversation_id": "friend:Alice",
+    "created_at": "",
+    "updated_at": ""
+  },
+  {
+    "draft_user_id": "draft_fbd73dafa6cc",
+    "proposed_name": "Bob",
+    "proposed_user_type": "未知",
+    "current_intent": "未知",
+    "relationship_to_me": "未知",
+    "confidence": 0.35,
+    "source_signals": [
+      "new_conversation_no_alias_hit"
+    ],
+    "status": "draft",
+    "conversation_id": "group:Project Group",
+    "created_at": "",
+    "updated_at": ""
+  },
+  {
+    "draft_user_id": "draft_ff3de5251390",
+    "proposed_name": "碱水面包",
+    "proposed_user_type": "未知",
+    "current_intent": "未知",
+    "relationship_to_me": "未知",
+    "confidence": 0.35,
+    "source_signals": [
+      "new_conversation_no_alias_hit"
+    ],
+    "status": "draft",
+    "conversation_id": "friend:碱水面包",
+    "created_at": "",
+    "updated_at": ""
+  },
+  {
+    "draft_user_id": "draft_7211bf20654e",
+    "proposed_name": "🎈Dan、碱水面包、👿",
+    "proposed_user_type": "未知",
+    "current_intent": "未知",
+    "relationship_to_me": "未知",
+    "confidence": 0.35,
+    "source_signals": [
+      "new_conversation_no_alias_hit"
+    ],
+    "status": "draft",
+    "conversation_id": "group:🎈Dan、碱水面包、👿",
+    "created_at": "",
+    "updated_at": ""
+  }
+]

@@ -15,6 +15,14 @@ configure_comtypes_cache(ROOT)
 from pyweixin import Contacts, GlobalConfig, Messages, Tools  # noqa: E402
 
 
+def _configure_console_output() -> None:
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
 def run_step(name, func):
     try:
         value = func()
@@ -24,6 +32,7 @@ def run_step(name, func):
 
 
 def main() -> int:
+    _configure_console_output()
     GlobalConfig.close_weixin = False
     GlobalConfig.is_maximize = False
 

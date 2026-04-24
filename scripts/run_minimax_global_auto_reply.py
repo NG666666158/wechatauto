@@ -16,7 +16,16 @@ configure_comtypes_cache(ROOT)
 from wechat_ai.wechat_runtime import WeChatAIApp  # noqa: E402
 
 
+def _configure_console_output() -> None:
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
 def main() -> int:
+    _configure_console_output()
     parser = argparse.ArgumentParser(description="Run global MiniMax-powered auto reply for unread WeChat sessions.")
     parser.add_argument("--duration", default="5min", help="Total running duration, e.g. 30s / 5min / 1h")
     parser.add_argument("--poll-interval", type=float, default=1.0, help="Polling interval in seconds")
