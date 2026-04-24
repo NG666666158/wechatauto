@@ -9,7 +9,7 @@ from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-TMP_ROOT = ROOT / ".tmp_self_identity_admin_tests"
+TMP_ROOT = ROOT / ".tmp" / "self_identity_admin_tests"
 TMP_ROOT.mkdir(exist_ok=True)
 
 

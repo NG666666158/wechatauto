@@ -8,6 +8,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+TMP_ROOT = ROOT / ".tmp"
+TMP_ROOT.mkdir(exist_ok=True)
 
 
 from wechat_ai import RetrievedChunk  # type: ignore  # noqa: E402
@@ -34,7 +36,7 @@ class SemanticTestEmbeddings(BaseEmbeddings):
 
 class LocalIndexRetrieverTests(unittest.TestCase):
     def _make_temp_dir(self) -> Path:
-        root = ROOT / ".tmp_wechat_ai_rag_retrieval"
+        root = TMP_ROOT / "wechat_ai_rag_retrieval"
         root.mkdir(exist_ok=True)
         return root
 

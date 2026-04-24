@@ -9,11 +9,13 @@ from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+TMP_ROOT = ROOT / ".tmp"
+TMP_ROOT.mkdir(exist_ok=True)
 
 
 class WeChatAIIdentityTests(unittest.TestCase):
     def make_temp_dir(self) -> Path:
-        path = ROOT / ".tmp_identity_tests" / uuid4().hex
+        path = TMP_ROOT / "identity_tests" / uuid4().hex
         path.mkdir(parents=True, exist_ok=False)
         return path
 

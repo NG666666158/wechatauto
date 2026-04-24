@@ -8,6 +8,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+TMP_ROOT = ROOT / ".tmp"
+TMP_ROOT.mkdir(exist_ok=True)
 
 
 def _reset_dir(path: Path) -> None:
@@ -19,7 +21,7 @@ def _reset_dir(path: Path) -> None:
 def test_loads_markdown_text_and_json_documents() -> None:
     from wechat_ai.rag.ingest import load_knowledge_documents
 
-    scratch_dir = ROOT / ".tmp_wechat_ai_rag_loading" / "knowledge"
+    scratch_dir = TMP_ROOT / "wechat_ai_rag_loading" / "knowledge"
     _reset_dir(scratch_dir)
 
     try:
@@ -69,7 +71,7 @@ def test_loads_markdown_text_and_json_documents() -> None:
 def test_ignores_empty_files() -> None:
     from wechat_ai.rag.ingest import load_knowledge_documents
 
-    scratch_dir = ROOT / ".tmp_wechat_ai_rag_loading_empty" / "knowledge"
+    scratch_dir = TMP_ROOT / "wechat_ai_rag_loading_empty" / "knowledge"
     _reset_dir(scratch_dir)
 
     try:
@@ -87,7 +89,7 @@ def test_ignores_empty_files() -> None:
 def test_invalid_json_raises_readable_error() -> None:
     from wechat_ai.rag.ingest import load_knowledge_documents
 
-    scratch_dir = ROOT / ".tmp_wechat_ai_rag_loading_invalid" / "knowledge"
+    scratch_dir = TMP_ROOT / "wechat_ai_rag_loading_invalid" / "knowledge"
     _reset_dir(scratch_dir)
 
     try:

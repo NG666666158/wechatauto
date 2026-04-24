@@ -9,10 +9,12 @@ from unittest import TestCase
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+TMP_ROOT = ROOT / ".tmp"
+TMP_ROOT.mkdir(exist_ok=True)
 
 
 def _fresh_dir(prefix: str) -> Path:
-    path = ROOT / f"{prefix}_{uuid.uuid4().hex}"
+    path = TMP_ROOT / prefix.lstrip(".") / uuid.uuid4().hex
     path.mkdir(parents=True, exist_ok=True)
     return path
 

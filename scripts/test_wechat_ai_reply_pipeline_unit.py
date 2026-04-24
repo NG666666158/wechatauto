@@ -11,6 +11,8 @@ from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+TMP_ROOT = ROOT / ".tmp"
+TMP_ROOT.mkdir(exist_ok=True)
 
 
 from wechat_ai.logging_utils import read_jsonl_events  # type: ignore  # noqa: E402
@@ -527,7 +529,7 @@ class ReplyPipelineOrchestrationTests(unittest.TestCase):
         )
 
     def test_generate_reply_writes_logs_and_updates_memory_store_end_to_end(self) -> None:
-        temp_root = ROOT / ".tmp_observability_e2e" / str(uuid4())
+        temp_root = TMP_ROOT / "observability_e2e" / str(uuid4())
         logs_path = temp_root / "runtime.jsonl"
         memory_dir = temp_root / "memory"
         memory_dir.mkdir(parents=True, exist_ok=True)

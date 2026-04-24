@@ -10,11 +10,13 @@ from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+TMP_ROOT = ROOT / ".tmp"
+TMP_ROOT.mkdir(exist_ok=True)
 
 
 class ObservabilityScriptsTests(unittest.TestCase):
     def test_show_recent_logs_prints_latest_event(self) -> None:
-        temp_root = ROOT / ".tmp_observability_script_tests" / str(uuid4())
+        temp_root = TMP_ROOT / "observability_script_tests" / str(uuid4())
         temp_root.mkdir(parents=True, exist_ok=True)
         log_path = temp_root / "runtime_events.jsonl"
         with log_path.open("w", encoding="utf-8") as handle:
@@ -32,7 +34,7 @@ class ObservabilityScriptsTests(unittest.TestCase):
         self.assertNotIn('"chat_id": "older"', result.stdout)
 
     def test_show_memory_summary_prints_stored_summary(self) -> None:
-        temp_root = ROOT / ".tmp_observability_script_tests" / str(uuid4())
+        temp_root = TMP_ROOT / "observability_script_tests" / str(uuid4())
         memory_dir = temp_root / "memory"
         memory_dir.mkdir(parents=True, exist_ok=True)
         memory_path = memory_dir / "friend_demo.json"

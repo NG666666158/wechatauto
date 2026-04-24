@@ -9,6 +9,8 @@ from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+TMP_ROOT = ROOT / ".tmp"
+TMP_ROOT.mkdir(exist_ok=True)
 
 
 from wechat_ai.memory.memory_keys import (  # type: ignore  # noqa: E402
@@ -51,7 +53,7 @@ class MemoryKeyLayeringTests(unittest.TestCase):
         )
 
     def test_load_by_identity_prefers_user_then_conversation_then_chat_id(self) -> None:
-        temp_dir = ROOT / ".tmp_memory_layering_unit" / str(uuid4())
+        temp_dir = TMP_ROOT / "memory_layering_unit" / str(uuid4())
         temp_dir.mkdir(parents=True, exist_ok=True)
         store = MemoryStore(base_dir=temp_dir)
 
@@ -84,7 +86,7 @@ class MemoryKeyLayeringTests(unittest.TestCase):
         )
 
     def test_append_snapshot_by_identity_promotes_fallback_record_into_primary_key(self) -> None:
-        temp_dir = ROOT / ".tmp_memory_layering_unit" / str(uuid4())
+        temp_dir = TMP_ROOT / "memory_layering_unit" / str(uuid4())
         temp_dir.mkdir(parents=True, exist_ok=True)
         store = MemoryStore(base_dir=temp_dir)
 
@@ -109,7 +111,7 @@ class MemoryKeyLayeringTests(unittest.TestCase):
         self.assertTrue(conversation_path.exists())
 
     def test_load_compatibly_reads_legacy_json_payload_shape(self) -> None:
-        temp_dir = ROOT / ".tmp_memory_layering_unit" / str(uuid4())
+        temp_dir = TMP_ROOT / "memory_layering_unit" / str(uuid4())
         temp_dir.mkdir(parents=True, exist_ok=True)
         path = temp_dir / f"{safe_storage_name('legacy-chat', fallback='unknown_chat')}.json"
         path.write_text(

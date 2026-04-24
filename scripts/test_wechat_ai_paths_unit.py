@@ -7,6 +7,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+TMP_ROOT = ROOT / ".tmp"
+TMP_ROOT.mkdir(exist_ok=True)
 
 
 def test_path_constants() -> None:
@@ -28,7 +30,7 @@ def test_path_constants() -> None:
 def test_bootstrap_data_dirs_creates_missing_directories() -> None:
     from wechat_ai import paths
 
-    scratch_root = ROOT / ".tmp_wechat_ai_paths_bootstrap"
+    scratch_root = TMP_ROOT / "wechat_ai_paths_bootstrap"
     if scratch_root.exists():
         shutil.rmtree(scratch_root, ignore_errors=True)
 

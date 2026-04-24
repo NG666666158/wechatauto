@@ -11,6 +11,8 @@ __pycache__/
 *.local.json
 *.log
 .tmp_*/
+.tmp/
+.tmp_archive/
 wechat_ai/data/logs/*.jsonl
 wechat_ai/data/memory/*.json
 wechat_ai/data/users/*.json

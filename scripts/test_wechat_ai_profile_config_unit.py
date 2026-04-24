@@ -12,6 +12,8 @@ from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+TMP_ROOT = ROOT / ".tmp"
+TMP_ROOT.mkdir(exist_ok=True)
 
 
 class ProfileConfigTests(unittest.TestCase):
@@ -20,7 +22,7 @@ class ProfileConfigTests(unittest.TestCase):
         return importlib.import_module("wechat_ai.config")
 
     def make_temp_dir(self) -> Path:
-        path = ROOT / ".tmp_profile_config_tests" / uuid4().hex
+        path = TMP_ROOT / "profile_config_tests" / uuid4().hex
         path.mkdir(parents=True, exist_ok=False)
         self.addCleanup(lambda: shutil.rmtree(path, ignore_errors=True))
         return path

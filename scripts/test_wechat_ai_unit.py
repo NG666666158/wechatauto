@@ -11,6 +11,8 @@ from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+TMP_ROOT = ROOT / ".tmp"
+TMP_ROOT.mkdir(exist_ok=True)
 
 
 from wechat_ai.context import build_context_window  # type: ignore  # noqa: E402
@@ -148,7 +150,7 @@ class ReplyEngineTests(unittest.TestCase):
 
 class LoggingAndMemoryTests(unittest.TestCase):
     def test_jsonl_event_logger_writes_one_line_per_event(self) -> None:
-        temp_dir = ROOT / ".tmp_observability_unit_logs" / str(uuid4())
+        temp_dir = TMP_ROOT / "observability_unit_logs" / str(uuid4())
         temp_dir.mkdir(parents=True, exist_ok=True)
         log_path = temp_dir / "runtime.jsonl"
         logger = JsonlEventLogger(path=log_path)
@@ -166,7 +168,7 @@ class LoggingAndMemoryTests(unittest.TestCase):
         self.assertEqual(len(tail_jsonl_events(limit=1, path=log_path)), 1)
 
     def test_jsonl_event_logger_redacts_sensitive_values_and_rotates(self) -> None:
-        temp_dir = ROOT / ".tmp_observability_unit_logs" / str(uuid4())
+        temp_dir = TMP_ROOT / "observability_unit_logs" / str(uuid4())
         temp_dir.mkdir(parents=True, exist_ok=True)
         log_path = temp_dir / "runtime.jsonl"
         logger = JsonlEventLogger(path=log_path, max_bytes=120, backup_count=2)
@@ -182,7 +184,7 @@ class LoggingAndMemoryTests(unittest.TestCase):
         self.assertTrue((temp_dir / "runtime.jsonl.1").exists())
 
     def test_memory_store_create_load_and_update_flows(self) -> None:
-        temp_dir = ROOT / ".tmp_observability_unit_memory" / str(uuid4())
+        temp_dir = TMP_ROOT / "observability_unit_memory" / str(uuid4())
         temp_dir.mkdir(parents=True, exist_ok=True)
         store = MemoryStore(base_dir=temp_dir)
 
@@ -204,7 +206,7 @@ class LoggingAndMemoryTests(unittest.TestCase):
     def test_memory_store_uses_shared_safe_filename_and_preserves_original_chat_id(self) -> None:
         from wechat_ai.storage_names import safe_storage_name
 
-        temp_dir = ROOT / ".tmp_observability_unit_memory" / str(uuid4())
+        temp_dir = TMP_ROOT / "observability_unit_memory" / str(uuid4())
         temp_dir.mkdir(parents=True, exist_ok=True)
         store = MemoryStore(base_dir=temp_dir)
         chat_id = ' 群聊 /\\:*?"<>| friend '
@@ -218,7 +220,7 @@ class LoggingAndMemoryTests(unittest.TestCase):
         self.assertEqual(store.load(chat_id).chat_id, chat_id)
 
     def test_memory_store_truncates_redacts_and_limits_snapshots(self) -> None:
-        temp_dir = ROOT / ".tmp_observability_unit_memory" / str(uuid4())
+        temp_dir = TMP_ROOT / "observability_unit_memory" / str(uuid4())
         temp_dir.mkdir(parents=True, exist_ok=True)
         store = MemoryStore(
             base_dir=temp_dir,
