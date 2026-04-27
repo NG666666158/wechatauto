@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import platform
-import subprocess
 import sys
 from pathlib import Path
 from typing import Iterable
@@ -17,24 +15,14 @@ from _bootstrap import configure_comtypes_cache  # noqa: E402
 
 configure_comtypes_cache(ROOT)
 
+from wechat_ai.app.wechat_bootstrap import is_process_running  # noqa: E402
 from wechat_ai.app.wechat_window_probe import WeChatWindowProbe  # noqa: E402
 
 
 def _wechat_is_running() -> bool:
     if platform.system().lower() != "windows":
         return False
-    try:
-        result = subprocess.run(
-            ["tasklist", "/fo", "csv", "/nh"],
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    names = {row[0].strip().lower() for row in csv.reader(result.stdout.splitlines()) if row}
-    return "wechat.exe" in names or "weixin.exe" in names
+    return is_process_running("WeChat.exe") or is_process_running("Weixin.exe")
 
 
 def build_probe_report(*, probe: object | None = None, recent_limit: int = 20) -> dict[str, object]:

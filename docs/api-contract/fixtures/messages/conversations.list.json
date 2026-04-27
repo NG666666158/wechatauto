@@ -1,0 +1,23 @@
+{
+  "data": [
+    {
+      "conversation_id": "friend:zhang",
+      "is_group": false,
+      "latest_message": "请问你们的产品支持试用吗？",
+      "title": "张先生",
+      "unread_count": 1,
+      "updated_at": "2026-04-25T09:41:00+08:00"
+    },
+    {
+      "conversation_id": "friend:li",
+      "is_group": false,
+      "latest_message": "价格方案能再详细一点吗？",
+      "title": "李女士",
+      "unread_count": 2,
+      "updated_at": "2026-04-25T09:39:00+08:00"
+    }
+  ],
+  "error": null,
+  "success": true,
+  "trace_id": "fixture-messages-list"
+}

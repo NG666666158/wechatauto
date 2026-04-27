@@ -51,6 +51,7 @@ class DesktopSettingsStore:
             knowledge_chunk_overlap=int(payload.get("knowledge_chunk_overlap", 200)),
             run_silently=bool(payload.get("run_silently", True)),
             esc_action=str(payload.get("esc_action", "pause")),
+            force_stop_hotkey=str(payload.get("force_stop_hotkey", "ctrl+shift+f12")).strip() or "ctrl+shift+f12",
             schedule_enabled=bool(payload.get("schedule_enabled", False)),
             schedule_blocks=[
                 ScheduleBlock(

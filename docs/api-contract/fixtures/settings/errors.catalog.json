@@ -1,0 +1,128 @@
+{
+  "data": {
+    "http_errors": [
+      {
+        "code": "REQUEST_INVALID",
+        "description": "请求体、查询参数或路径参数不符合 API 契约。",
+        "http_status": 422,
+        "message": "Invalid request"
+      },
+      {
+        "code": "CONFIG_INVALID",
+        "description": "启动模式、配置项或运行参数不被当前后端支持。",
+        "http_status": 400,
+        "message": "Configuration invalid"
+      },
+      {
+        "code": "RUNTIME_ALREADY_RUNNING",
+        "description": "守护进程已经在运行，重复启动会被拒绝。",
+        "http_status": 409,
+        "message": "Runtime already running"
+      },
+      {
+        "code": "RUNTIME_NOT_RUNNING",
+        "description": "守护进程未运行时执行停止操作会被拒绝。",
+        "http_status": 409,
+        "message": "Runtime not running"
+      },
+      {
+        "code": "WECHAT_WINDOW_NOT_FOUND",
+        "description": "未发现可操作的微信窗口或窗口不可访问。",
+        "http_status": 503,
+        "message": "WeChat window not found"
+      },
+      {
+        "code": "WECHAT_NOT_LOGIN",
+        "description": "微信未登录或主界面尚未就绪。",
+        "http_status": 503,
+        "message": "WeChat not logged in"
+      },
+      {
+        "code": "KNOWLEDGE_INDEX_MISSING",
+        "description": "知识库索引尚未构建，不能执行依赖索引的能力。",
+        "http_status": 409,
+        "message": "Knowledge index missing"
+      },
+      {
+        "code": "MODEL_API_FAILED",
+        "description": "模型服务调用失败或返回不可用结果。",
+        "http_status": 502,
+        "message": "Model API failed"
+      },
+      {
+        "code": "PERMISSION_DENIED",
+        "description": "当前操作缺少必要权限或被安全策略拒绝。",
+        "http_status": 403,
+        "message": "Permission denied"
+      },
+      {
+        "code": "UNKNOWN_ERROR",
+        "description": "未预期的后端异常，响应中不会暴露敏感堆栈细节。",
+        "http_status": 500,
+        "message": "Internal server error"
+      }
+    ],
+    "send_reply_reason_codes": [
+      {
+        "code": "EMPTY_TEXT",
+        "description": "回复内容为空。",
+        "status": "blocked"
+      },
+      {
+        "code": "HUMAN_TAKEOVER",
+        "description": "会话已由人工接管。",
+        "status": "blocked"
+      },
+      {
+        "code": "CONVERSATION_PAUSED",
+        "description": "会话已暂停自动回复。",
+        "status": "blocked"
+      },
+      {
+        "code": "BLACKLISTED",
+        "description": "会话在黑名单中。",
+        "status": "blocked"
+      },
+      {
+        "code": "SEND_FAILED",
+        "description": "真实发送器执行失败。",
+        "status": "failed"
+      },
+      {
+        "code": "SEND_NOT_CONFIRMED",
+        "description": "发送后未通过窗口侧确认。",
+        "status": "unconfirmed"
+      }
+    ],
+    "send_reply_statuses": [
+      {
+        "description": "发送前校验未通过，前端应展示原因但不视为 API 崩溃。",
+        "http_status": 200,
+        "status": "blocked"
+      },
+      {
+        "description": "真实发送器未启用，后端仅完成校验和占位返回。",
+        "http_status": 200,
+        "status": "not_implemented"
+      },
+      {
+        "description": "消息已发送，必要时也已通过视觉确认。",
+        "http_status": 200,
+        "status": "sent"
+      },
+      {
+        "description": "发送动作已执行，但窗口侧未确认消息出现。",
+        "http_status": 200,
+        "status": "unconfirmed"
+      },
+      {
+        "description": "真实发送动作失败，错误留在 data.reason / data.reason_code。",
+        "http_status": 200,
+        "status": "failed"
+      }
+    ]
+  },
+  "error": null,
+  "success": true,
+  "trace_id": "fixture-settings-errors"
+}

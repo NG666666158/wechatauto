@@ -3,20 +3,27 @@ from __future__ import annotations
 from dataclasses import asdict
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 import threading
+from types import SimpleNamespace
 from typing import Any, Mapping, Sequence
+from uuid import uuid4
 
 from wechat_ai import paths
 from wechat_ai.identity import identity_admin
 from wechat_ai.logging_utils import sanitize_text, tail_jsonl_events, utc_timestamp
 from wechat_ai.models import Message
+from wechat_ai.orchestration.prompt_builder import PromptBuilder
 from wechat_ai.rag.embeddings import FakeEmbeddings
 from wechat_ai.rag.retriever import LocalIndexRetriever
 from wechat_ai.rag.web_knowledge_builder import WebKnowledgeBuilder
 from wechat_ai.self_identity import admin as self_identity_admin
 
 from .daemon_controller import DaemonController
+from .conversation_store import ConversationStore, conversation_title
 from .knowledge_importer import KnowledgeImporter
 from .models import AppStatus, ConversationListItem, CustomerRecord, ReplySuggestion
 from .schedule_manager import ScheduleManager
@@ -34,13 +41,15 @@ class _NoOpDaemonRunner:
     def launch(
         self,
         *,
-        run_silently: bool = True,
+        run_silently: bool = False,
         poll_interval: float = 1.0,
         heartbeat_interval: float = 60.0,
         error_backoff_seconds: float = 5.0,
+        force_stop_hotkey: str = "ctrl+shift+f12",
+        force_stop_file: str | Path | None = None,
         stop_event: threading.Event | None = None,
     ) -> int:
-        del run_silently, poll_interval, heartbeat_interval, error_backoff_seconds, stop_event
+        del run_silently, poll_interval, heartbeat_interval, error_backoff_seconds, force_stop_hotkey, force_stop_file, stop_event
         pid = self._next_pid
         self._next_pid += 1
         self._running.add(pid)
@@ -52,6 +61,189 @@ class _NoOpDaemonRunner:
 
     def is_running(self, pid: int | None) -> bool:
         return pid is not None and pid in self._running
+
+
+class _SubprocessDaemonRunner:
+    def __init__(self, *, project_root: Path | None = None) -> None:
+        self.project_root = Path(project_root) if project_root is not None else Path(__file__).resolve().parents[2]
+        self._processes: dict[int, subprocess.Popen[str]] = {}
+        self._watchdogs: dict[int, subprocess.Popen[str]] = {}
+        self._stop_files: dict[int, Path] = {}
+        self.default_stop_file = self.project_root / "wechat_ai" / "data" / "app" / "force_stop.flag"
+
+    def launch(
+        self,
+        *,
+        run_silently: bool = False,
+        poll_interval: float = 1.0,
+        heartbeat_interval: float = 60.0,
+        error_backoff_seconds: float = 5.0,
+        force_stop_hotkey: str = "ctrl+shift+f12",
+        force_stop_file: str | Path | None = None,
+        stop_event: threading.Event | None = None,
+    ) -> int:
+        del stop_event
+        stop_file = Path(force_stop_file) if force_stop_file is not None else self.default_stop_file
+        stop_file.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            stop_file.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            try:
+                stop_file.write_text("", encoding="utf-8")
+            except Exception:
+                pass
+        runtime_args = [
+            "py",
+            "-3",
+            "scripts\\run_minimax_global_auto_reply.py",
+            "--forever",
+            "--poll-interval",
+            str(poll_interval),
+            "--heartbeat-interval",
+            str(heartbeat_interval),
+            "--error-backoff-seconds",
+            str(error_backoff_seconds),
+            "--force-stop-hotkey",
+            str(force_stop_hotkey or "off"),
+            "--force-stop-file",
+            str(stop_file),
+        ]
+        if not run_silently:
+            runtime_args.append("--debug")
+        escaped_project_root = str(self.project_root).replace("'", "''")
+        powershell_script = (
+            "$env:PYTHONIOENCODING='utf-8'; "
+            f"Set-Location -LiteralPath '{escaped_project_root}'; "
+            f"{subprocess.list2cmdline(runtime_args)}"
+        )
+        command = [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            powershell_script,
+        ]
+        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        if run_silently:
+            creationflags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        else:
+            creationflags |= getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+        stdout_target: Any = subprocess.DEVNULL if run_silently else None
+        stderr_target: Any = subprocess.DEVNULL if run_silently else None
+        process = subprocess.Popen(
+            command,
+            cwd=str(self.project_root),
+            creationflags=creationflags,
+            stdout=stdout_target,
+            stderr=stderr_target,
+            text=True,
+        )
+        self._processes[process.pid] = process
+        self._stop_files[process.pid] = stop_file
+        self._watchdogs[process.pid] = self._launch_emergency_watchdog(
+            target_pid=int(process.pid),
+            stop_file=stop_file,
+            force_stop_hotkey=force_stop_hotkey,
+            run_silently=run_silently,
+        )
+        return int(process.pid)
+
+    def stop(self, pid: int) -> bool:
+        process = self._processes.pop(pid, None)
+        self._request_emergency_stop(pid)
+        if process is not None:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    subprocess.run(
+                        ["taskkill", "/PID", str(pid), "/T", "/F"],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+                    try:
+                        process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+            self._stop_watchdog(pid)
+            return True
+        result = subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self._stop_watchdog(pid)
+        return result.returncode == 0
+
+    def _request_emergency_stop(self, pid: int) -> None:
+        stop_file = self._stop_files.pop(pid, self.default_stop_file)
+        try:
+            stop_file.parent.mkdir(parents=True, exist_ok=True)
+            stop_file.write_text("stop\n", encoding="utf-8")
+        except Exception:
+            pass
+
+    def is_running(self, pid: int | None) -> bool:
+        if pid is None:
+            return False
+        process = self._processes.get(pid)
+        if process is not None:
+            if process.poll() is None:
+                return True
+            self._processes.pop(pid, None)
+            self._stop_watchdog(pid)
+            return False
+        return _windows_pid_exists(pid)
+
+    def _launch_emergency_watchdog(
+        self,
+        *,
+        target_pid: int,
+        stop_file: Path,
+        force_stop_hotkey: str,
+        run_silently: bool,
+    ) -> subprocess.Popen[str]:
+        command = [
+            sys.executable,
+            str(self.project_root / "scripts" / "emergency_stop_watchdog.py"),
+            "--target-pid",
+            str(target_pid),
+            "--stop-file",
+            str(stop_file),
+            "--hotkey",
+            str(force_stop_hotkey or "off"),
+            "--log-file",
+            str(self.project_root / "wechat_ai" / "data" / "logs" / "emergency_stop_watchdog.log"),
+        ]
+        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        stdout_target: Any = subprocess.DEVNULL if run_silently else None
+        stderr_target: Any = subprocess.DEVNULL if run_silently else None
+        return subprocess.Popen(
+            command,
+            cwd=str(self.project_root),
+            creationflags=creationflags,
+            stdout=stdout_target,
+            stderr=stderr_target,
+            text=True,
+        )
+
+    def _stop_watchdog(self, pid: int) -> None:
+        watchdog = self._watchdogs.pop(pid, None)
+        if watchdog is None:
+            return
+        if watchdog.poll() is not None:
+            return
+        watchdog.terminate()
+        try:
+            watchdog.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            watchdog.kill()
 
 
 class PyWeixinReplySender:
@@ -87,9 +279,10 @@ class DesktopAppService:
         self.runtime_log_path = root / "logs" / "runtime_events.jsonl"
         self.runtime_log_path.parent.mkdir(parents=True, exist_ok=True)
         self.conversation_store_path = self.app_dir / "conversations.json"
+        self.conversation_store = ConversationStore(self.conversation_store_path)
         self.settings_store = settings_store or DesktopSettingsStore(self.app_dir / "desktop_settings.json")
         self.daemon_controller = DaemonController(self.app_dir / "daemon_state.json")
-        self.daemon_runner = daemon_runner or _NoOpDaemonRunner()
+        self.daemon_runner = daemon_runner or _SubprocessDaemonRunner()
         self.schedule_manager = ScheduleManager()
         self.tray_adapter = TrayAdapter()
         self._daemon_stop_event: threading.Event | None = None
@@ -136,17 +329,139 @@ class DesktopAppService:
 
     def start_daemon(self) -> dict[str, object]:
         settings = self.get_settings()
+        self._clear_force_stop_flag()
         stop_event = threading.Event()
         self._daemon_stop_event = stop_event
+        force_stop_file = self.app_dir / f"force_stop_{uuid4().hex}.flag"
+        # pyweixin locates WeChat through the interactive desktop. During local
+        # web control, keep the worker visible so it matches the proven manual
+        # PowerShell path and exposes Ctrl+C/debug output.
+        run_silently = False
         pid = self.daemon_runner.launch(
-            run_silently=settings.run_silently,
+            run_silently=run_silently,
             poll_interval=1.0,
             heartbeat_interval=60.0,
             error_backoff_seconds=5.0,
+            force_stop_hotkey=settings.force_stop_hotkey,
+            force_stop_file=force_stop_file,
             stop_event=stop_event,
         )
-        status = self.daemon_controller.start(run_silently=settings.run_silently, pid=pid)
+        status = self.daemon_controller.start(run_silently=run_silently, pid=pid)
         return asdict(status)
+
+    def bootstrap_wechat_for_web_start(
+        self,
+        *,
+        ready_timeout_seconds: float = 20.0,
+        poll_interval_seconds: float = 1.0,
+        narrator_settle_seconds: float = 10.0,
+        wait_for_ui_ready_before_guardian: bool = False,
+    ) -> dict[str, object]:
+        # Run pyweixin probing in the same foreground-style process used by the
+        # proven first-run template. Keeping UI Automation out of the uvicorn
+        # server process avoids COM apartment drift during repeated web checks.
+        return self._run_bootstrap_probe_process(
+            ready_timeout_seconds=ready_timeout_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            narrator_settle_seconds=narrator_settle_seconds,
+            wait_for_ui_ready_before_guardian=wait_for_ui_ready_before_guardian,
+        )
+
+    def _run_bootstrap_probe_process(
+        self,
+        *,
+        ready_timeout_seconds: float,
+        poll_interval_seconds: float,
+        narrator_settle_seconds: float,
+        wait_for_ui_ready_before_guardian: bool,
+    ) -> dict[str, object]:
+        project_root = paths.ROOT.parent
+        script_path = project_root / "scripts" / "bootstrap_wechat_first_run.py"
+        command = [
+            sys.executable,
+            str(script_path),
+            "--no-start-guardian",
+            "--ready-timeout",
+            str(max(float(ready_timeout_seconds), 0.0)),
+            "--poll-interval",
+            str(max(float(poll_interval_seconds), 0.1)),
+            "--narrator-settle-seconds",
+            str(max(float(narrator_settle_seconds), 0.0)),
+        ]
+        if wait_for_ui_ready_before_guardian:
+            command.append("--wait-for-ui-ready")
+
+        env = dict(os.environ)
+        env.setdefault("PYTHONIOENCODING", "utf-8")
+        timeout_seconds = max(float(ready_timeout_seconds) + float(narrator_settle_seconds) + 30.0, 30.0)
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=project_root,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            status_lines = _extract_bootstrap_status_lines(exc.stdout or "")
+            return {
+                "ok": False,
+                "wechat_started": False,
+                "narrator_started": False,
+                "ui_ready": False,
+                "guardian_started": False,
+                "narrator_stopped": False,
+                "attempts": 0,
+                "message": "微信环境检测子进程超时，未进入自动回复轮询。",
+                "guardian_command": [],
+                "guardian_exit_code": None,
+                "status_lines": status_lines,
+                "environment": self._bootstrap_process_environment(False, "timeout"),
+            }
+
+        payload = _parse_bootstrap_process_payload(completed.stdout)
+        if payload is None:
+            payload = {
+                "ok": False,
+                "wechat_started": False,
+                "narrator_started": False,
+                "ui_ready": False,
+                "guardian_started": False,
+                "narrator_stopped": False,
+                "attempts": 0,
+                "message": "微信环境检测子进程未返回有效结果。",
+                "guardian_command": [],
+                "guardian_exit_code": None,
+            }
+        payload["status_lines"] = _extract_bootstrap_status_lines(completed.stdout)
+        payload["process_exit_code"] = completed.returncode
+        if completed.stderr.strip():
+            payload["stderr_tail"] = completed.stderr.strip().splitlines()[-8:]
+        payload["environment"] = self._bootstrap_process_environment(
+            bool(payload.get("ui_ready")),
+            "" if bool(payload.get("ok")) else str(payload.get("message") or "bootstrap process failed"),
+        )
+        return payload
+
+    def _bootstrap_process_environment(self, ui_ready: bool, reason: str) -> dict[str, object]:
+        return {
+            "wechat_running": _is_wechat_running(),
+            "wechat_path": locate_existing_wechat_path(""),
+            "narrator_required": True,
+            "ui_ready": ui_ready,
+            "ui_probe": {
+                "ready": ui_ready,
+                "status": "ok" if ui_ready else "error",
+                "reason": reason,
+                "pyweixin_functional_ready": ui_ready,
+                "probe_source": "bootstrap_wechat_first_run.py",
+            },
+            "checks": ["wechat_process", "windows_accessibility", "pyweixin_bootstrap_process"],
+        }
 
     def pause_daemon(self) -> dict[str, object]:
         status = self.daemon_controller.load_status()
@@ -169,12 +484,71 @@ class DesktopAppService:
         self._daemon_stop_event = None
         return asdict(updated)
 
+    def force_stop_daemon(self) -> dict[str, object]:
+        status = self.daemon_controller.load_status()
+        if self._daemon_stop_event is not None:
+            self._daemon_stop_event.set()
+        self._write_force_stop_flag()
+        if status.pid is not None:
+            self.daemon_runner.stop(status.pid)
+        self._kill_orphan_auto_reply_processes()
+        updated = self.daemon_controller.stop()
+        self._daemon_stop_event = None
+        return asdict(updated)
+
+    def _write_force_stop_flag(self) -> None:
+        try:
+            stop_file = self.app_dir / "force_stop.flag"
+            stop_file.parent.mkdir(parents=True, exist_ok=True)
+            stop_file.write_text("stop\n", encoding="utf-8")
+        except Exception:
+            pass
+
+    def _clear_force_stop_flag(self) -> None:
+        stop_file = self.app_dir / "force_stop.flag"
+        try:
+            stop_file.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            try:
+                stop_file.write_text("", encoding="utf-8")
+            except Exception:
+                pass
+
+    def _kill_orphan_auto_reply_processes(self) -> None:
+        script_names = (
+            "run_minimax_global_auto_reply.py",
+            "run_minimax_friend_auto_reply.py",
+            "run_minimax_group_at_reply.py",
+        )
+        script_filter = " -or ".join(f"$_.CommandLine -like '*{name}*'" for name in script_names)
+        command = (
+            "Get-CimInstance Win32_Process | "
+            f"Where-Object {{ {script_filter} }} | "
+            "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+        )
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command", command],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
     def apply_schedule_tick(self, *, now: datetime | None = None) -> dict[str, object]:
         schedule_status = self.schedule_manager.evaluate(self.get_settings(), now=now)
         daemon_status = self.get_daemon_status()
         if schedule_status.should_run and daemon_status["state"] != "running":
+            bootstrap = self.bootstrap_wechat_for_web_start(
+                ready_timeout_seconds=20.0,
+                poll_interval_seconds=1.0,
+                narrator_settle_seconds=10.0,
+                wait_for_ui_ready_before_guardian=False,
+            )
+            if not bool(bootstrap.get("ok")):
+                return {"action": "start_blocked", "daemon": daemon_status, "schedule": asdict(schedule_status), "bootstrap": bootstrap}
             started = self.start_daemon()
-            return {"action": "start", "daemon": started, "schedule": asdict(schedule_status)}
+            return {"action": "start", "daemon": started, "schedule": asdict(schedule_status), "bootstrap": bootstrap}
         if not schedule_status.should_run and daemon_status["state"] == "running":
             paused = self.pause_daemon()
             return {"action": "pause", "daemon": paused, "schedule": asdict(schedule_status)}
@@ -185,6 +559,9 @@ class DesktopAppService:
         schedule_status = self.schedule_manager.evaluate(self.get_settings(), now=now)
         return asdict(self.tray_adapter.build_state(daemon_status=daemon_status, schedule_status=schedule_status))
 
+    def get_schedule_status(self, *, now: datetime | None = None) -> dict[str, object]:
+        return asdict(self.schedule_manager.evaluate(self.get_settings(), now=now))
+
     def list_identity_drafts(self) -> list[dict[str, Any]]:
         return self.identity_admin.list_drafts(base_dir=self.identity_dir)
 
@@ -193,7 +570,9 @@ class DesktopAppService:
 
     def list_customers(self) -> list[CustomerRecord]:
         records: list[CustomerRecord] = []
+        seen_ids: set[str] = set()
         for user in self.identity_admin.list_users(base_dir=self.identity_dir):
+            seen_ids.add(str(user["user_id"]))
             records.append(
                 CustomerRecord(
                     customer_id=str(user["user_id"]),
@@ -204,12 +583,37 @@ class DesktopAppService:
                     last_contact_at=str(user.get("updated_at", "")) or None,
                 )
             )
+        for conversation_id, record in self.conversation_store.list_records().items():
+            if conversation_id in seen_ids or not isinstance(record, dict):
+                continue
+            if bool(record.get("is_group", str(conversation_id).startswith("group:"))):
+                continue
+            records.append(
+                CustomerRecord(
+                    customer_id=str(conversation_id),
+                    display_name=str(record.get("title", "")) or conversation_title(str(conversation_id)),
+                    status="draft",
+                    tags=["本地会话"],
+                    remark="来自自动回复聊天记录，待补充用户画像",
+                    last_contact_at=str(record.get("updated_at", "")) or None,
+                )
+            )
         return records
 
     def get_customer(self, customer_id: str) -> dict[str, Any]:
         for customer in self.list_customers():
             if customer.customer_id == customer_id:
                 return asdict(customer) | {"display_name": customer.display_name}
+        record = self.conversation_store.get_record(customer_id)
+        if record.get("messages"):
+            return {
+                "customer_id": customer_id,
+                "display_name": str(record.get("title", "")) or conversation_title(customer_id),
+                "status": "draft",
+                "tags": ["本地会话"],
+                "remark": "来自自动回复聊天记录，待补充用户画像",
+                "last_contact_at": str(record.get("updated_at", "")) or None,
+            }
         return {"status": "not_found", "customer_id": customer_id}
 
     def get_global_self_identity(self) -> dict[str, Any]:
@@ -259,6 +663,51 @@ class DesktopAppService:
             relationship_to_me=relationship_to_me,
             base_dir=self.self_identity_dir,
         )
+
+    def build_prompt_acceptance_preview(
+        self,
+        user_id: str,
+        *,
+        latest_message: str,
+        tags: Sequence[str] | None = None,
+        display_name: str = "",
+        relationship_to_me: str | None = None,
+        knowledge_limit: int = 3,
+        scene: str = "friend",
+    ) -> dict[str, Any]:
+        resolved_user_id = str(user_id).strip()
+        self_identity_profile = self.preview_self_identity(
+            resolved_user_id,
+            tags=tags,
+            display_name=display_name,
+            relationship_to_me=relationship_to_me,
+        )
+        knowledge_results = self.search_knowledge(str(latest_message), limit=knowledge_limit)
+        prompt_preview = PromptBuilder().debug_preview(
+            scene=scene,
+            latest_message=str(latest_message),
+            contexts=[],
+            self_identity_profile=SimpleNamespace(**self_identity_profile),
+            knowledge_chunks=[str(item.get("text", "")).strip() for item in knowledge_results],
+        )
+        customer = self.get_customer(resolved_user_id)
+        identity_status = str(customer.get("status", "")).strip() or "unknown"
+        identity_confidence = 1.0 if identity_status == "confirmed" else None
+        return {
+            "resolved_user_id": resolved_user_id,
+            "identity_status": identity_status,
+            "identity_confidence": identity_confidence,
+            "latest_message": str(latest_message),
+            "scene": scene,
+            "self_identity_profile": {
+                "display_name": str(self_identity_profile.get("display_name", "")).strip(),
+                "identity_facts": list(self_identity_profile.get("identity_facts", [])),
+                "relationship": str(self_identity_profile.get("relationship", "")).strip(),
+                "tags": list(tags or []),
+            },
+            "knowledge_results": knowledge_results,
+            "prompt_preview": prompt_preview,
+        }
 
     def send_reply(self, conversation_id: str, text: str) -> dict[str, str]:
         preflight = self.validate_send_reply(conversation_id, text)
@@ -417,7 +866,7 @@ class DesktopAppService:
         )
 
     def list_conversations(self) -> list[ConversationListItem]:
-        payload = self._load_conversation_payload()
+        payload = self.conversation_store.list_records()
         items: list[ConversationListItem] = []
         for conversation_id, record in payload.items():
             if not isinstance(record, dict):
@@ -439,15 +888,7 @@ class DesktopAppService:
 
     def get_conversation(self, conversation_id: str) -> dict[str, Any]:
         normalized_id = str(conversation_id).strip()
-        payload = self._load_conversation_payload()
-        record = payload.get(normalized_id)
-        if not isinstance(record, dict):
-            record = {
-                "title": _conversation_title(normalized_id),
-                "is_group": normalized_id.startswith("group:"),
-                "unread_count": 0,
-                "messages": [],
-            }
+        record = self.conversation_store.get_record(normalized_id)
         messages = [
             _normalize_message_item(normalized_id, item)
             for item in record.get("messages", [])
@@ -477,34 +918,13 @@ class DesktopAppService:
         sent_at: str | None = None,
     ) -> dict[str, Any]:
         normalized_id = str(conversation_id).strip()
-        payload = self._load_conversation_payload()
-        record = payload.get(normalized_id)
-        if not isinstance(record, dict):
-            record = {
-                "title": str(sender).strip() or _conversation_title(normalized_id),
-                "is_group": normalized_id.startswith("group:"),
-                "unread_count": 0,
-                "messages": [],
-            }
-        messages = record.get("messages")
-        if not isinstance(messages, list):
-            messages = []
-        message = {
-            "message_id": f"msg_{len(messages) + 1:04d}",
-            "conversation_id": normalized_id,
-            "sender": str(sender).strip() or "unknown",
-            "text": str(text),
-            "direction": direction if direction in {"incoming", "outgoing"} else "incoming",
-            "sent_at": sent_at or utc_timestamp(),
-        }
-        messages.append(message)
-        record["messages"] = messages[-100:]
-        record["title"] = str(record.get("title", "")) or str(sender).strip() or _conversation_title(normalized_id)
-        if message["direction"] == "incoming":
-            record["unread_count"] = int(record.get("unread_count", 0)) + 1
-        payload[normalized_id] = record
-        self._save_conversation_payload(payload)
-        return message
+        return self.conversation_store.append_message(
+            normalized_id,
+            sender=sender,
+            text=text,
+            direction=direction,
+            sent_at=sent_at,
+        )
 
     def import_knowledge_files(self, file_paths: Sequence[Path | str]) -> dict[str, Any]:
         result = self.knowledge_importer.import_files(file_paths)
@@ -519,7 +939,21 @@ class DesktopAppService:
         if not status.ready:
             return []
         retriever = LocalIndexRetriever(index_path=Path(status.index_path), embeddings=FakeEmbeddings())
-        return [asdict(chunk) for chunk in retriever.retrieve(query, limit=limit)]
+        results: list[dict[str, Any]] = []
+        for chunk in retriever.retrieve(query, limit=limit):
+            payload = asdict(chunk)
+            metadata = payload.get("metadata", {})
+            chunk_id = ""
+            if isinstance(metadata, dict):
+                chunk_id = str(metadata.get("chunk_id") or metadata.get("source_id") or "").strip()
+                if not chunk_id:
+                    doc_id = str(metadata.get("doc_id", "")).strip()
+                    chunk_index = str(metadata.get("chunk_index", "")).strip()
+                    if doc_id or chunk_index:
+                        chunk_id = f"{doc_id}:{chunk_index}".strip(":")
+            payload["chunk_id"] = chunk_id
+            results.append(payload)
+        return results
 
     def get_knowledge_status(self) -> dict[str, Any]:
         return asdict(self.knowledge_importer.get_status())
@@ -531,6 +965,36 @@ class DesktopAppService:
         search_limit: int = 5,
     ) -> dict[str, object]:
         return self.web_knowledge_builder.build_from_documents(file_paths, search_limit=search_limit)
+
+    def build_knowledge_acceptance_snapshot(
+        self,
+        query: str,
+        *,
+        imported_files: Sequence[str] | None = None,
+    ) -> dict[str, object]:
+        retrieved_chunks = self.search_knowledge(query, limit=3)
+        return {
+            "imported_files": [str(item) for item in (imported_files or []) if str(item).strip()],
+            "search_query": str(query),
+            "retrieved_chunk_ids": [
+                str(
+                    item.get("chunk_id")
+                    or (item.get("metadata", {}) if isinstance(item.get("metadata"), dict) else {}).get("chunk_id")
+                    or (item.get("metadata", {}) if isinstance(item.get("metadata"), dict) else {}).get("source_id")
+                    or ""
+                ).strip()
+                for item in retrieved_chunks
+                if str(
+                    item.get("chunk_id")
+                    or (item.get("metadata", {}) if isinstance(item.get("metadata"), dict) else {}).get("chunk_id")
+                    or (item.get("metadata", {}) if isinstance(item.get("metadata"), dict) else {}).get("source_id")
+                    or ""
+                ).strip()
+            ],
+            "retrieved_chunks": retrieved_chunks,
+            "knowledge_status": self.get_knowledge_status(),
+            "web_build_status": "available",
+        }
 
     def get_recent_logs(self, *, limit: int = 20) -> list[dict[str, Any]]:
         policy = self.get_privacy_policy()
@@ -588,7 +1052,7 @@ class DesktopAppService:
     def get_wechat_environment_status(self) -> dict[str, object]:
         wechat_path = locate_existing_wechat_path("")
         wechat_running = _is_wechat_running()
-        ui_probe = self._probe_wechat_ui() if (wechat_running or self.wechat_window_probe is not None) else {
+        ui_probe = self._probe_wechat_ui_for_startup() if (wechat_running or self.wechat_window_probe is not None) else {
             "ready": "unknown",
             "status": "skipped",
             "reason": "未检测到微信进程，跳过窗口控件探测。",
@@ -611,6 +1075,61 @@ class DesktopAppService:
         if self.wechat_window_probe is None:
             self.wechat_window_probe = WeChatWindowProbe.from_pyweixin()
         return self.wechat_window_probe
+
+    def _bootstrap_ui_ready_check(self) -> object:
+        return self._probe_wechat_ui_for_startup()
+
+    def _probe_wechat_ui_for_startup(self) -> dict[str, object]:
+        probe_result = self._probe_wechat_ui()
+        if bool(probe_result.get("ready")):
+            probe_result["pyweixin_functional_ready"] = False
+            return probe_result
+        return self._probe_pyweixin_functional_ready(probe_result)
+
+    def _probe_pyweixin_functional_ready(self, probe_result: Mapping[str, object]) -> dict[str, object]:
+        payload = dict(probe_result)
+        checks: dict[str, object] = {}
+        errors: list[str] = []
+
+        def record_error(label: str, exc: Exception) -> None:
+            errors.append(f"{label}: {type(exc).__name__}: {exc}")
+
+        try:
+            from pyweixin import Contacts, Messages
+
+            try:
+                profile = Contacts.check_my_info(close_weixin=False)
+                if profile:
+                    checks["my_profile"] = profile
+            except Exception as exc:
+                record_error("check_my_info", exc)
+
+            try:
+                sessions = Messages.dump_recent_sessions(recent="Today", chat_only=False, close_weixin=False)
+                if isinstance(sessions, list):
+                    checks["recent_sessions"] = sessions[:3]
+            except Exception as exc:
+                record_error("dump_recent_sessions", exc)
+
+            try:
+                new_messages = Messages.check_new_messages(close_weixin=False)
+                if new_messages is not None:
+                    checks["new_messages"] = new_messages
+            except Exception as exc:
+                record_error("check_new_messages", exc)
+        except Exception as exc:
+            record_error("import_pyweixin", exc)
+
+        payload["pyweixin_functional_ready"] = bool(checks)
+        payload["functional_checks"] = checks
+        if errors:
+            payload["functional_errors"] = errors[-3:]
+        if checks:
+            payload["ready"] = True
+            payload["status"] = "ok"
+            payload["reason"] = ""
+            payload["focus_recommendation"] = str(payload.get("focus_recommendation") or "")
+        return payload
 
     def _probe_wechat_ui(self) -> dict[str, object]:
         try:
@@ -738,7 +1257,7 @@ def _confirmation_succeeded(value: object) -> bool:
 
 
 def _normalize_message_item(conversation_id: str, item: Mapping[str, object]) -> dict[str, object]:
-    return {
+    normalized = {
         "message_id": str(item.get("message_id", "")) or "msg_unknown",
         "conversation_id": str(item.get("conversation_id", "")) or conversation_id,
         "sender": str(item.get("sender", "")) or "unknown",
@@ -746,6 +1265,10 @@ def _normalize_message_item(conversation_id: str, item: Mapping[str, object]) ->
         "direction": str(item.get("direction", "incoming")) if item.get("direction") in {"incoming", "outgoing"} else "incoming",
         "sent_at": str(item.get("sent_at", "")),
     }
+    delivery_status = str(item.get("delivery_status", "")).strip()
+    if delivery_status:
+        normalized["delivery_status"] = delivery_status
+    return normalized
 
 
 def _blocked_send(reason_code: str, reason: str) -> dict[str, object]:
@@ -754,6 +1277,40 @@ def _blocked_send(reason_code: str, reason: str) -> dict[str, object]:
         "reason_code": reason_code,
         "reason": reason,
     }
+
+
+def _windows_pid_exists(pid: int | None) -> bool:
+    if pid is None:
+        return False
+    try:
+        normalized_pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if normalized_pid <= 0:
+        return False
+    result = subprocess.run(
+        ["tasklist", "/FI", f"PID eq {normalized_pid}"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    tasklist_output = f"{result.stdout}\n{result.stderr}"
+    if str(normalized_pid) in tasklist_output:
+        return True
+    if result.returncode == 0 and "No tasks" in tasklist_output:
+        return False
+    powershell_result = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            f"$p = Get-Process -Id {normalized_pid} -ErrorAction SilentlyContinue; if ($p) {{ 'RUNNING' }}",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return "RUNNING" in str(powershell_result.stdout)
 
 
 def _parse_event_timestamp(value: object) -> float | None:
@@ -768,3 +1325,28 @@ def _parse_event_timestamp(value: object) -> float | None:
 
 def _is_wechat_running() -> bool:
     return is_process_running("Weixin.exe") or is_process_running("WeChat.exe")
+
+
+def _extract_bootstrap_status_lines(stdout: str) -> list[str]:
+    lines: list[str] = []
+    for raw_line in str(stdout or "").splitlines():
+        line = raw_line.strip()
+        if line.startswith("[bootstrap]"):
+            lines.append(line.removeprefix("[bootstrap]").strip())
+    return lines
+
+
+def _parse_bootstrap_process_payload(stdout: str) -> dict[str, object] | None:
+    text = str(stdout or "").strip()
+    if not text:
+        return None
+    start = text.rfind("\n{")
+    json_text = text[start + 1 :] if start >= 0 else text
+    if not json_text.startswith("{"):
+        start = text.find("{")
+        json_text = text[start:] if start >= 0 else ""
+    try:
+        parsed = json.loads(json_text)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None

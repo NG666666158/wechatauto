@@ -1,0 +1,13 @@
+{
+  "data": {
+    "allowed": true,
+    "conversation_id": "friend:zhang",
+    "reason": "",
+    "reason_code": "",
+    "status": "sent",
+    "text": "支持 7 天试用，我可以先给你发申请方式。"
+  },
+  "error": null,
+  "success": true,
+  "trace_id": "fixture-messages-send-sent"
+}

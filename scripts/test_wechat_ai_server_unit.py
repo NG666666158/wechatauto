@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 import sys
 from pathlib import Path
@@ -64,6 +65,39 @@ class FakeDesktopService:
                 "reason_code": "EMPTY_TEXT",
             },
         ]
+        self.environment_status: dict[str, object] = {
+            "wechat_running": True,
+            "narrator_required": False,
+            "ui_ready": "unknown",
+            "ui_probe": {
+                "window_ready": True,
+                "window_minimized": False,
+                "input_ready": True,
+                "current_chat": "文件传输助手",
+            },
+        }
+        self.recent_logs_calls = 0
+        self.environment_calls = 0
+        self.bootstrap_calls = 0
+        self.last_bootstrap_request: dict[str, object] = {}
+        self.bootstrap_result: dict[str, object] = {
+            "ok": True,
+            "wechat_started": True,
+            "narrator_started": True,
+            "ui_ready": False,
+            "guardian_started": False,
+            "narrator_stopped": True,
+            "attempts": 1,
+            "message": "已完成首次启动引导，准备启动守护。",
+            "guardian_command": [],
+            "guardian_exit_code": None,
+            "status_lines": ["启动微信: C:\\Weixin\\Weixin.exe", "检测到微信已运行，按宽松模式继续启动守护。"],
+            "environment": {
+                "wechat_running": True,
+                "narrator_required": True,
+                "ui_ready": False,
+            },
+        }
 
     def get_app_status(self) -> FakeAppStatus:
         return FakeAppStatus(daemon_state=str(self.daemon_state["state"]))
@@ -81,6 +115,28 @@ class FakeDesktopService:
         self.daemon_state = {"state": "stopped", "pid": None}
         return dict(self.daemon_state)
 
+    def bootstrap_wechat_for_web_start(
+        self,
+        *,
+        ready_timeout_seconds: float = 20.0,
+        poll_interval_seconds: float = 1.0,
+        narrator_settle_seconds: float = 10.0,
+        wait_for_ui_ready_before_guardian: bool = False,
+    ) -> dict[str, object]:
+        self.bootstrap_calls += 1
+        result = dict(self.bootstrap_result)
+        self.last_bootstrap_request = {
+            "ready_timeout_seconds": ready_timeout_seconds,
+            "poll_interval_seconds": poll_interval_seconds,
+            "narrator_settle_seconds": narrator_settle_seconds,
+            "wait_for_ui_ready_before_guardian": wait_for_ui_ready_before_guardian,
+        }
+        return result
+
+    def pause_daemon(self) -> dict[str, object]:
+        self.daemon_state = {"state": "paused", "pid": self.daemon_state.get("pid")}
+        return dict(self.daemon_state)
+
     def get_knowledge_status(self) -> dict[str, object]:
         return {"ready": False, "index_path": "memory://test-index"}
 
@@ -90,6 +146,34 @@ class FakeDesktopService:
     def update_settings(self, patch: dict[str, object]) -> dict[str, object]:
         self.settings.update(patch)
         return dict(self.settings)
+
+    def get_tray_state(self) -> dict[str, object]:
+        return {
+            "tooltip": f"WeChat AI: {self.daemon_state['state']}",
+            "menu_items": [
+                {"item_id": "show", "label": "显示主界面", "action": "show_window", "enabled": True},
+                {"item_id": "start", "label": "开始守护", "action": "start_daemon", "enabled": self.daemon_state["state"] != "running"},
+                {"item_id": "pause", "label": "暂停守护", "action": "pause_daemon", "enabled": self.daemon_state["state"] == "running"},
+                {"item_id": "stop", "label": "停止守护", "action": "stop_daemon", "enabled": self.daemon_state["state"] != "stopped"},
+                {"item_id": "exit", "label": "退出应用", "action": "exit_app", "enabled": True},
+            ],
+            "recommended_action": "pause_daemon" if self.daemon_state["state"] == "running" else "start_daemon",
+        }
+
+    def get_schedule_status(self) -> dict[str, object]:
+        return {
+            "enabled": bool(self.settings.get("schedule_enabled", False)),
+            "should_run": True,
+            "next_action": "none",
+            "reason": "schedule_disabled",
+        }
+
+    def apply_schedule_tick(self) -> dict[str, object]:
+        return {
+            "action": "noop",
+            "daemon": dict(self.daemon_state),
+            "schedule": self.get_schedule_status(),
+        }
 
     def list_customers(self) -> list[dict[str, object]]:
         return [{"customer_id": "user_001", "display_name": "张先生", "tags": ["意向客户"]}]
@@ -109,6 +193,43 @@ class FakeDesktopService:
     def update_global_self_identity(self, patch: dict[str, object]) -> dict[str, object]:
         return {"display_name": patch.get("display_name", "碱水"), "identity_facts": patch.get("identity_facts", [])}
 
+    def build_prompt_acceptance_preview(
+        self,
+        user_id: str,
+        *,
+        latest_message: str,
+        tags: list[str] | None = None,
+        display_name: str = "",
+        relationship_to_me: str | None = None,
+        knowledge_limit: int = 3,
+        scene: str = "friend",
+    ) -> dict[str, object]:
+        return {
+            "resolved_user_id": user_id,
+            "scene": scene,
+            "latest_message": latest_message,
+            "self_identity_profile": {
+                "display_name": display_name or "碱水",
+                "identity_facts": ["我是产品顾问"],
+                "relationship": relationship_to_me or "",
+                "tags": list(tags or []),
+            },
+            "knowledge_results": [
+                {"chunk_id": "chunk_001", "text": "试用政策：支持 7 天体验，可先登记后开通。", "score": 0.9}
+            ][:knowledge_limit],
+            "prompt_preview": "## Self Identity Summary\nIdentity facts: 我是产品顾问\n\n## Retrieved Knowledge\n1. 试用政策：支持 7 天体验，可先登记后开通。",
+        }
+
+    def build_knowledge_acceptance_snapshot(self, query: str, *, imported_files: list[str] | None = None) -> dict[str, object]:
+        return {
+            "imported_files": list(imported_files or []),
+            "search_query": query,
+            "retrieved_chunk_ids": ["chunk_001"],
+            "retrieved_chunks": [{"chunk_id": "chunk_001", "text": f"命中: {query}", "score": 0.9}],
+            "knowledge_status": self.get_knowledge_status(),
+            "web_build_status": "built",
+        }
+
     def search_knowledge(self, query: str, *, limit: int = 3) -> list[dict[str, object]]:
         return [{"chunk_id": "chunk_001", "text": f"命中: {query}", "score": 0.9}][:limit]
 
@@ -119,6 +240,7 @@ class FakeDesktopService:
         return {"documents": list(file_paths), "search_limit": search_limit, "status": "built"}
 
     def get_recent_logs(self, *, limit: int = 20) -> list[dict[str, object]]:
+        self.recent_logs_calls += 1
         return self.log_events[-limit:]
 
     def get_privacy_policy(self) -> dict[str, object]:
@@ -131,7 +253,8 @@ class FakeDesktopService:
         return privacy
 
     def get_wechat_environment_status(self) -> dict[str, object]:
-        return {"wechat_running": True, "narrator_required": False, "ui_ready": "unknown"}
+        self.environment_calls += 1
+        return dict(self.environment_status)
 
     def get_conversation_control(self, conversation_id: str) -> dict[str, object]:
         return {
@@ -263,9 +386,17 @@ def test_openapi_schema_is_available() -> None:
     assert "/api/v1/health" in payload["paths"]
     assert "/api/v1/runtime/status" in payload["paths"]
     assert "/api/v1/runtime/start" in payload["paths"]
+    assert "/api/v1/runtime/bootstrap-check" in payload["paths"]
+    assert "/api/v1/runtime/bootstrap-start" in payload["paths"]
     assert "/api/v1/runtime/stop" in payload["paths"]
     assert "/api/v1/runtime/restart" in payload["paths"]
+    assert "/api/v1/runtime/pause" in payload["paths"]
     assert "/api/v1/dashboard/summary" in payload["paths"]
+    assert "/api/v1/debug/prompt-preview" in payload["paths"]
+    assert "/api/v1/debug/knowledge-acceptance" in payload["paths"]
+    assert "/api/v1/shell/tray-state" in payload["paths"]
+    assert "/api/v1/shell/schedule-status" in payload["paths"]
+    assert "/api/v1/shell/schedule/tick" in payload["paths"]
     assert "/api/v1/settings" in payload["paths"]
     assert "/api/v1/customers" in payload["paths"]
     assert "/api/v1/conversations" in payload["paths"]
@@ -278,7 +409,338 @@ def test_openapi_schema_is_available() -> None:
     assert "/api/v1/privacy/apply-retention" in payload["paths"]
     assert "/api/v1/controls/conversations/{conversation_id}" in payload["paths"]
     assert "/api/v1/environment/wechat" in payload["paths"]
+    assert "/api/v1/events" in payload["paths"]
     assert "ApiResponse" in str(payload["components"]["schemas"])
+
+
+def test_sse_events_endpoint_replays_recent_event_and_closes_in_once_mode() -> None:
+    from wechat_ai.server import create_app
+
+    app = create_app(desktop_service=FakeDesktopService())
+    event = app.state.event_bus.publish(
+        "runtime.status",
+        {"state": "running", "mode": "global"},
+        trace_id="trace-event",
+    )
+    client = TestClient(app)
+
+    response = client.get("/api/v1/events?replay=10&once=true")
+    body = response.text
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert f"id: {event['id']}" in body
+    assert "event: runtime.status" in body
+    assert '"state":"running"' in body
+    assert '"mode":"global"' in body
+    assert '"trace_id":"trace-event"' in body
+
+
+def test_event_bus_subscription_replays_and_receives_future_events_without_gap() -> None:
+    from wechat_ai.server.services.events import EventBus
+
+    async def scenario() -> None:
+        bus = EventBus()
+        first = bus.publish("runtime.status", {"state": "running"}, trace_id="trace-first")
+        replay_events, subscription = bus.subscribe(replay=1)
+        try:
+            second = bus.publish("message.received", {"conversation_id": "friend:alice"}, trace_id="trace-second")
+            streamed = await bus.next_event(subscription, timeout=0.2)
+        finally:
+            bus.unsubscribe(subscription)
+
+        assert [event["id"] for event in replay_events] == [first["id"]]
+        assert streamed is not None
+        assert streamed["id"] == second["id"]
+        assert streamed["trace_id"] == "trace-second"
+
+    asyncio.run(scenario())
+
+
+def test_runtime_actions_publish_runtime_status_events() -> None:
+    from wechat_ai.server import create_app
+
+    app = create_app(desktop_service=FakeDesktopService())
+    client = TestClient(app)
+
+    client.post("/api/v1/runtime/start", json={"mode": "global"}, headers={"x-trace-id": "trace-start"})
+    response = client.get("/api/v1/events?replay=10&once=true")
+
+    assert "event: runtime.status" in response.text
+    assert '"state":"running"' in response.text
+    assert '"trace_id":"trace-start"' in response.text
+
+
+def test_runtime_bootstrap_start_endpoint_runs_bootstrap_before_starting_daemon() -> None:
+    from wechat_ai.server import create_app
+
+    service = FakeDesktopService()
+    client = TestClient(create_app(desktop_service=service))
+
+    response = client.post("/api/v1/runtime/bootstrap-start", json={"mode": "global"})
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert payload["data"]["state"] == "running"
+    assert payload["data"]["bootstrap"]["ok"] is True
+    assert service.last_bootstrap_request["wait_for_ui_ready_before_guardian"] is True
+    assert payload["data"]["bootstrap"]["status_lines"][-1].startswith("检测到微信已运行")
+    assert service.bootstrap_calls == 1
+    assert service.started == 1
+
+
+def test_runtime_bootstrap_check_only_preflights_without_starting_daemon() -> None:
+    from wechat_ai.server import create_app
+
+    service = FakeDesktopService()
+    client = TestClient(create_app(desktop_service=service))
+
+    response = client.post("/api/v1/runtime/bootstrap-check", json={"mode": "global"})
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert payload["data"]["state"] == "stopped"
+    assert payload["data"]["running"] is False
+    assert payload["data"]["bootstrap"]["ok"] is True
+    assert payload["data"]["bootstrap"]["guardian_started"] is False
+    assert service.last_bootstrap_request["wait_for_ui_ready_before_guardian"] is True
+    assert service.bootstrap_calls == 1
+    assert service.started == 0
+
+
+def test_runtime_bootstrap_start_returns_wechat_window_error_when_preflight_fails() -> None:
+    from wechat_ai.server import create_app
+
+    service = FakeDesktopService()
+    service.bootstrap_result = {
+        "ok": False,
+        "wechat_started": True,
+        "narrator_started": True,
+        "ui_ready": False,
+        "guardian_started": False,
+        "narrator_stopped": False,
+        "attempts": 20,
+        "message": "在设定时间内未识别到微信主界面，请确认已扫码登录且讲述人已正常工作。",
+        "guardian_command": [],
+        "guardian_exit_code": None,
+        "status_lines": ["等待微信主界面可识别，第 20 次检测...", "等待超时，未识别到微信主界面。"],
+        "environment": {"wechat_running": True, "narrator_required": True, "ui_ready": False},
+    }
+    client = TestClient(create_app(desktop_service=service))
+
+    response = client.post("/api/v1/runtime/bootstrap-start", json={"mode": "global"})
+    payload = response.json()
+
+    assert response.status_code == 409
+    assert payload["success"] is False
+    assert payload["error"]["code"] == "WECHAT_WINDOW_NOT_FOUND"
+    assert payload["error"]["detail"]["status_lines"][-1].startswith("等待超时")
+    assert service.bootstrap_calls == 1
+    assert service.started == 0
+
+
+def test_runtime_pause_returns_paused_state() -> None:
+    from wechat_ai.server import create_app
+
+    service = FakeDesktopService()
+    client = TestClient(create_app(desktop_service=service))
+
+    client.post("/api/v1/runtime/start", json={"mode": "global"})
+    paused = client.post("/api/v1/runtime/pause", headers={"x-trace-id": "trace-pause"})
+    payload = paused.json()
+
+    assert paused.status_code == 200
+    assert payload["success"] is True
+    assert payload["trace_id"] == "trace-pause"
+    assert payload["data"]["state"] == "paused"
+    assert payload["data"]["running"] is False
+
+
+def test_shell_tray_state_endpoint_is_available() -> None:
+    from wechat_ai.server import create_app
+
+    client = TestClient(create_app(desktop_service=FakeDesktopService()))
+    response = client.get("/api/v1/shell/tray-state")
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert "tooltip" in payload["data"]
+    assert "menu_items" in payload["data"]
+
+
+def test_shell_schedule_endpoints_are_available() -> None:
+    from wechat_ai.server import create_app
+
+    client = TestClient(create_app(desktop_service=FakeDesktopService()))
+    status = client.get("/api/v1/shell/schedule-status")
+    tick = client.post("/api/v1/shell/schedule/tick")
+
+    assert status.status_code == 200
+    assert status.json()["success"] is True
+    assert "enabled" in status.json()["data"]
+    assert tick.status_code == 200
+    assert tick.json()["success"] is True
+    assert "action" in tick.json()["data"]
+
+
+def test_debug_prompt_preview_endpoint_is_available() -> None:
+    from wechat_ai.server import create_app
+
+    client = TestClient(create_app(desktop_service=FakeDesktopService()))
+    response = client.get(
+        "/api/v1/debug/prompt-preview",
+        params={
+            "user_id": "user_001",
+            "latest_message": "你们支持试用吗？",
+            "relationship_to_me": "customer",
+        },
+    )
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert payload["data"]["resolved_user_id"] == "user_001"
+    assert "我是产品顾问" in payload["data"]["prompt_preview"]
+
+
+def test_debug_knowledge_acceptance_endpoint_is_available() -> None:
+    from wechat_ai.server import create_app
+
+    client = TestClient(create_app(desktop_service=FakeDesktopService()))
+    response = client.get(
+        "/api/v1/debug/knowledge-acceptance",
+        params={"q": "试用政策", "imported_files": ["policy.txt"]},
+    )
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert payload["data"]["imported_files"] == ["policy.txt"]
+    assert payload["data"]["search_query"] == "试用政策"
+    assert payload["data"]["retrieved_chunk_ids"] == ["chunk_001"]
+
+
+def test_background_event_relay_primes_bus_without_per_client_sync_calls() -> None:
+    from wechat_ai.server import create_app
+
+    service = FakeDesktopService()
+    service.log_events = [
+        {
+            "timestamp": "2026-04-24T10:10:00Z",
+            "event_type": "message_received",
+            "conversation_id": "friend:alice",
+            "sender": "Alice",
+            "text": "hello",
+            "is_group": False,
+            "trace_id": "trace-msg",
+        }
+    ]
+    app = create_app(desktop_service=service, event_relay_interval_seconds=60.0)
+
+    with TestClient(app) as client:
+        startup_log_calls = service.recent_logs_calls
+        startup_environment_calls = service.environment_calls
+        primed_events = app.state.event_bus.recent(10)
+
+        client.get("/api/v1/events?once=true")
+        client.get("/api/v1/events?once=true")
+
+        assert any(event["type"] == "message.received" for event in primed_events)
+        assert service.recent_logs_calls == startup_log_calls
+        assert service.environment_calls == startup_environment_calls
+        assert service.environment_calls == 0
+
+
+def test_runtime_event_relay_bridges_runtime_logs_and_environment_changes() -> None:
+    from wechat_ai.server import create_app
+
+    service = FakeDesktopService()
+    service.log_events = [
+        {
+            "timestamp": "2026-04-24T10:10:00Z",
+            "event_type": "message_received",
+            "conversation_id": "friend:alice",
+            "sender": "Alice",
+            "text": "hello",
+            "is_group": False,
+            "trace_id": "trace-msg",
+        },
+        {
+            "timestamp": "2026-04-24T10:11:00Z",
+            "event_type": "reply.error",
+            "trace_id": "trace-err",
+            "message": "send failed",
+            "exception_type": "RuntimeError",
+        },
+    ]
+    app = create_app(desktop_service=service)
+
+    app.state.event_relay.sync(service, app.state.event_bus, trace_id="trace-sync-1", include_environment=True)
+    service.environment_status = {
+        "wechat_running": True,
+        "narrator_required": False,
+        "ui_ready": False,
+        "ui_probe": {
+            "window_ready": True,
+            "window_minimized": True,
+            "input_ready": False,
+            "current_chat": "",
+        },
+    }
+    app.state.event_relay.sync(service, app.state.event_bus, trace_id="trace-sync-2", include_environment=True)
+
+    events = app.state.event_bus.recent(10)
+    event_types = [event["type"] for event in events]
+
+    assert "message.received" in event_types
+    assert "log.event" in event_types
+    assert "error" in event_types
+    received = next(event for event in events if event["type"] == "message.received")
+    assert received["data"]["conversation_id"] == "friend:alice"
+    assert received["data"]["text"] == "hello"
+    environment_log = next(
+        event
+        for event in events
+        if event["type"] == "log.event" and event["data"].get("event_type") == "window.environment.changed"
+    )
+    assert environment_log["data"]["snapshot"]["ui_ready"] is False
+    assert environment_log["data"]["snapshot"]["ui_probe"]["window_minimized"] is True
+
+
+def test_frontend_actions_publish_message_control_and_knowledge_events() -> None:
+    from wechat_ai.server import create_app
+
+    app = create_app(desktop_service=FakeDesktopService())
+    client = TestClient(app)
+
+    client.post(
+        "/api/v1/conversations/friend%3Aalice/send",
+        json={"text": "hello"},
+        headers={"x-trace-id": "trace-send"},
+    )
+    client.patch(
+        "/api/v1/controls/conversations/friend%3Aalice",
+        json={"paused": True},
+        headers={"x-trace-id": "trace-control"},
+    )
+    client.post(
+        "/api/v1/knowledge/import",
+        json={"file_paths": ["C:/tmp/faq.pdf"]},
+        headers={"x-trace-id": "trace-knowledge"},
+    )
+
+    body = client.get("/api/v1/events?replay=20&once=true").text
+
+    assert "event: message.sent" in body
+    assert "event: log.event" in body
+    assert "event: knowledge.progress" in body
+    assert '"conversation_id":"friend:alice"' in body
+    assert '"trace_id":"trace-send"' in body
+    assert '"trace_id":"trace-control"' in body
+    assert '"trace_id":"trace-knowledge"' in body
 
 
 def test_runtime_status_start_stop_flow() -> None:
@@ -636,6 +1098,20 @@ def main() -> None:
     test_ping_returns_versioned_success_shape()
     test_health_wraps_desktop_service_status()
     test_openapi_schema_is_available()
+    test_sse_events_endpoint_replays_recent_event_and_closes_in_once_mode()
+    test_event_bus_subscription_replays_and_receives_future_events_without_gap()
+    test_runtime_actions_publish_runtime_status_events()
+    test_runtime_bootstrap_start_endpoint_runs_bootstrap_before_starting_daemon()
+    test_runtime_bootstrap_check_only_preflights_without_starting_daemon()
+    test_runtime_bootstrap_start_returns_wechat_window_error_when_preflight_fails()
+    test_runtime_pause_returns_paused_state()
+    test_shell_tray_state_endpoint_is_available()
+    test_shell_schedule_endpoints_are_available()
+    test_debug_prompt_preview_endpoint_is_available()
+    test_debug_knowledge_acceptance_endpoint_is_available()
+    test_background_event_relay_primes_bus_without_per_client_sync_calls()
+    test_runtime_event_relay_bridges_runtime_logs_and_environment_changes()
+    test_frontend_actions_publish_message_control_and_knowledge_events()
     test_runtime_status_start_stop_flow()
     test_runtime_restart_stops_existing_runtime_and_starts_again()
     test_runtime_start_rejects_duplicate_start()

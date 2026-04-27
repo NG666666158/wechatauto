@@ -12,9 +12,9 @@ interface AppShellProps {
 
 export function AppShell({ title, headerRight, children, theme = "classic" }: AppShellProps) {
   return (
-    <div className={`app-theme app-theme-${theme} min-h-screen bg-[var(--app-page-bg)] p-6 text-[var(--app-text)]`}>
-      <div className="mx-auto max-w-[1160px] overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-shell-bg)] shadow-[var(--app-window-shadow)]">
-        <div className="flex min-h-[560px]">
+    <div className={`app-theme app-theme-${theme} min-h-screen bg-[var(--app-page-bg)] p-4 text-[var(--app-text)] lg:p-6`}>
+      <div className="mx-auto aspect-[16/9] min-h-[720px] w-full max-w-[1440px] overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-shell-bg)] shadow-[var(--app-window-shadow)]">
+        <div className="flex h-full min-h-[720px]">
           <div className="w-[168px] shrink-0 bg-[var(--app-sidebar-bg)]">
             <WindowChrome />
             <AppSidebar />
@@ -25,7 +25,7 @@ export function AppShell({ title, headerRight, children, theme = "classic" }: Ap
             <div className="absolute inset-y-24 left-[-1px] w-[3px] rounded-full bg-gradient-to-b from-transparent via-[var(--app-divider-glow)] to-transparent" />
           </div>
 
-          <main className="flex-1 bg-[var(--app-content-bg)]">
+          <main className="flex min-w-0 flex-1 flex-col bg-[var(--app-content-bg)]">
             <div className="flex h-16 items-center justify-between bg-[var(--app-surface)] px-7">
               <h1 className="text-[22px] font-bold text-[var(--app-title)]">{title}</h1>
               {headerRight ? <div>{headerRight}</div> : null}

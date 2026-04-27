@@ -1,6 +1,9 @@
 __pycache__/
 *.pyc
 *.venv
+node_modules/
+desktop_app/electron/node_modules/
+desktop_app/electron/tests/.tmp-*/
 .idea/
 .cache/
 .claude/
@@ -10,9 +13,11 @@ __pycache__/
 *.local
 *.local.json
 *.log
+.tmp-*.png
 .tmp_*/
 .tmp/
 .tmp_archive/
+wechat_ai/data/app/
 wechat_ai/data/logs/*.jsonl
 wechat_ai/data/memory/*.json
 wechat_ai/data/users/*.json

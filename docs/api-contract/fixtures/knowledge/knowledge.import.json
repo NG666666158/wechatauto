@@ -1,0 +1,18 @@
+{
+  "data": {
+    "files": [
+      {
+        "file_name": "产品手册.pdf",
+        "status": "imported"
+      },
+      {
+        "file_name": "FAQ.docx",
+        "status": "imported"
+      }
+    ],
+    "index_rebuilt": true
+  },
+  "error": null,
+  "success": true,
+  "trace_id": "fixture-knowledge-import"
+}

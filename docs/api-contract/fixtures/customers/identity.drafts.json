@@ -1,0 +1,10 @@
+{
+  "data": [
+    {
+      "draft_user_id": "draft_user_001"
+    }
+  ],
+  "error": null,
+  "success": true,
+  "trace_id": "fixture-customers-identity-drafts"
+}

@@ -1,0 +1,10 @@
+{
+  "data": {
+    "last_event_time": "2026-04-25T09:45:00+08:00",
+    "recent_count": 24,
+    "recent_error_count": 2
+  },
+  "error": null,
+  "success": true,
+  "trace_id": "fixture-home-logs-summary"
+}

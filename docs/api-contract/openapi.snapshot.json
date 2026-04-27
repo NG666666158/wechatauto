@@ -213,6 +213,44 @@
         "title": "ApiResponse[ErrorCatalogData]",
         "type": "object"
       },
+      "ApiResponse_KnowledgeAcceptanceSnapshotData_": {
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/KnowledgeAcceptanceSnapshotData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApiErrorPayload"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "success": {
+            "title": "Success",
+            "type": "boolean"
+          },
+          "trace_id": {
+            "default": "",
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "success"
+        ],
+        "title": "ApiResponse[KnowledgeAcceptanceSnapshotData]",
+        "type": "object"
+      },
       "ApiResponse_KnowledgeImportResultData_": {
         "properties": {
           "data": {
@@ -363,6 +401,44 @@
           "success"
         ],
         "title": "ApiResponse[PrivacyPolicyData]",
+        "type": "object"
+      },
+      "ApiResponse_PromptAcceptancePreviewData_": {
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PromptAcceptancePreviewData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApiErrorPayload"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "success": {
+            "title": "Success",
+            "type": "boolean"
+          },
+          "trace_id": {
+            "default": "",
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "success"
+        ],
+        "title": "ApiResponse[PromptAcceptancePreviewData]",
         "type": "object"
       },
       "ApiResponse_ReplySuggestionData_": {
@@ -1565,6 +1641,46 @@
         "title": "IdentityDraftData",
         "type": "object"
       },
+      "KnowledgeAcceptanceSnapshotData": {
+        "properties": {
+          "imported_files": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Imported Files",
+            "type": "array"
+          },
+          "knowledge_status": {
+            "$ref": "#/components/schemas/KnowledgeStatusData"
+          },
+          "retrieved_chunk_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Retrieved Chunk Ids",
+            "type": "array"
+          },
+          "retrieved_chunks": {
+            "items": {
+              "$ref": "#/components/schemas/KnowledgeSearchResultData"
+            },
+            "title": "Retrieved Chunks",
+            "type": "array"
+          },
+          "search_query": {
+            "default": "",
+            "title": "Search Query",
+            "type": "string"
+          },
+          "web_build_status": {
+            "default": "",
+            "title": "Web Build Status",
+            "type": "string"
+          }
+        },
+        "title": "KnowledgeAcceptanceSnapshotData",
+        "type": "object"
+      },
       "KnowledgeFileImportData": {
         "properties": {
           "file_name": {
@@ -1804,6 +1920,88 @@
         "title": "PrivacyPolicyPatchRequest",
         "type": "object"
       },
+      "PromptAcceptancePreviewData": {
+        "properties": {
+          "identity_confidence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Identity Confidence"
+          },
+          "identity_status": {
+            "default": "",
+            "title": "Identity Status",
+            "type": "string"
+          },
+          "knowledge_results": {
+            "items": {
+              "$ref": "#/components/schemas/KnowledgeSearchResultData"
+            },
+            "title": "Knowledge Results",
+            "type": "array"
+          },
+          "latest_message": {
+            "default": "",
+            "title": "Latest Message",
+            "type": "string"
+          },
+          "prompt_preview": {
+            "default": "",
+            "title": "Prompt Preview",
+            "type": "string"
+          },
+          "resolved_user_id": {
+            "default": "",
+            "title": "Resolved User Id",
+            "type": "string"
+          },
+          "scene": {
+            "default": "friend",
+            "title": "Scene",
+            "type": "string"
+          },
+          "self_identity_profile": {
+            "$ref": "#/components/schemas/PromptAcceptanceSelfIdentityData"
+          }
+        },
+        "title": "PromptAcceptancePreviewData",
+        "type": "object"
+      },
+      "PromptAcceptanceSelfIdentityData": {
+        "properties": {
+          "display_name": {
+            "default": "",
+            "title": "Display Name",
+            "type": "string"
+          },
+          "identity_facts": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Identity Facts",
+            "type": "array"
+          },
+          "relationship": {
+            "default": "",
+            "title": "Relationship",
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          }
+        },
+        "title": "PromptAcceptanceSelfIdentityData",
+        "type": "object"
+      },
       "ReplySuggestionData": {
         "properties": {
           "conversation_id": {
@@ -1861,6 +2059,16 @@
       },
       "RuntimeActionData": {
         "properties": {
+          "bootstrap": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RuntimeBootstrapData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "daemon": {
             "$ref": "#/components/schemas/DaemonStatusData"
           },
@@ -1881,6 +2089,120 @@
           }
         },
         "title": "RuntimeActionData",
+        "type": "object"
+      },
+      "RuntimeBootstrapData": {
+        "properties": {
+          "attempts": {
+            "default": 0,
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "environment": {
+            "additionalProperties": true,
+            "title": "Environment",
+            "type": "object"
+          },
+          "guardian_command": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Guardian Command",
+            "type": "array"
+          },
+          "guardian_exit_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Guardian Exit Code"
+          },
+          "guardian_started": {
+            "default": false,
+            "title": "Guardian Started",
+            "type": "boolean"
+          },
+          "message": {
+            "default": "",
+            "title": "Message",
+            "type": "string"
+          },
+          "narrator_started": {
+            "default": false,
+            "title": "Narrator Started",
+            "type": "boolean"
+          },
+          "narrator_stopped": {
+            "default": false,
+            "title": "Narrator Stopped",
+            "type": "boolean"
+          },
+          "ok": {
+            "default": false,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "status_lines": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Status Lines",
+            "type": "array"
+          },
+          "ui_ready": {
+            "default": false,
+            "title": "Ui Ready",
+            "type": "boolean"
+          },
+          "wechat_started": {
+            "default": false,
+            "title": "Wechat Started",
+            "type": "boolean"
+          }
+        },
+        "title": "RuntimeBootstrapData",
+        "type": "object"
+      },
+      "RuntimeBootstrapStartRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "default": "global",
+            "title": "Mode",
+            "type": "string"
+          },
+          "narrator_settle_seconds": {
+            "default": 10.0,
+            "maximum": 60.0,
+            "minimum": 0.0,
+            "title": "Narrator Settle Seconds",
+            "type": "number"
+          },
+          "poll_interval_seconds": {
+            "default": 1.0,
+            "maximum": 10.0,
+            "minimum": 0.2,
+            "title": "Poll Interval Seconds",
+            "type": "number"
+          },
+          "ready_timeout_seconds": {
+            "default": 20.0,
+            "maximum": 300.0,
+            "minimum": 1.0,
+            "title": "Ready Timeout Seconds",
+            "type": "number"
+          },
+          "wait_for_ui_ready_before_guardian": {
+            "default": false,
+            "title": "Wait For Ui Ready Before Guardian",
+            "type": "boolean"
+          }
+        },
+        "title": "RuntimeBootstrapStartRequest",
         "type": "object"
       },
       "RuntimeStartRequest": {
@@ -2151,6 +2473,11 @@
             "title": "Esc Action",
             "type": "string"
           },
+          "force_stop_hotkey": {
+            "default": "ctrl+shift+f12",
+            "title": "Force Stop Hotkey",
+            "type": "string"
+          },
           "human_takeover_sessions": {
             "items": {
               "type": "string"
@@ -2279,6 +2606,18 @@
               }
             ],
             "title": "Esc Action"
+          },
+          "force_stop_hotkey": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Force Stop Hotkey"
           },
           "human_takeover_sessions": {
             "anyOf": [
@@ -3016,6 +3355,193 @@
         ]
       }
     },
+    "/api/v1/debug/knowledge-acceptance": {
+      "get": {
+        "operationId": "knowledge_acceptance_api_v1_debug_knowledge_acceptance_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "maxLength": 8000,
+              "minLength": 1,
+              "title": "Q",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "imported_files",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Imported Files"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_KnowledgeAcceptanceSnapshotData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Knowledge Acceptance",
+        "tags": [
+          "debug"
+        ]
+      }
+    },
+    "/api/v1/debug/prompt-preview": {
+      "get": {
+        "operationId": "prompt_preview_api_v1_debug_prompt_preview_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "title": "User Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "latest_message",
+            "required": true,
+            "schema": {
+              "maxLength": 8000,
+              "minLength": 1,
+              "title": "Latest Message",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "relationship_to_me",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Relationship To Me"
+            }
+          },
+          {
+            "in": "query",
+            "name": "display_name",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 64,
+              "title": "Display Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tags",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tags"
+            }
+          },
+          {
+            "in": "query",
+            "name": "knowledge_limit",
+            "required": false,
+            "schema": {
+              "default": 3,
+              "maximum": 10,
+              "minimum": 1,
+              "title": "Knowledge Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scene",
+            "required": false,
+            "schema": {
+              "default": "friend",
+              "pattern": "^(friend|group)$",
+              "title": "Scene",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_PromptAcceptancePreviewData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Prompt Preview",
+        "tags": [
+          "debug"
+        ]
+      }
+    },
     "/api/v1/environment/wechat": {
       "get": {
         "operationId": "wechat_environment_api_v1_environment_wechat_get",
@@ -3055,6 +3581,71 @@
         "summary": "Get Error Catalog",
         "tags": [
           "system"
+        ]
+      }
+    },
+    "/api/v1/events": {
+      "get": {
+        "operationId": "stream_events_api_v1_events_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "replay",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 100,
+              "minimum": 0,
+              "title": "Replay",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "once",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Once",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "heartbeat_seconds",
+            "required": false,
+            "schema": {
+              "default": 15.0,
+              "maximum": 300.0,
+              "minimum": 1.0,
+              "title": "Heartbeat Seconds",
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream Events",
+        "tags": [
+          "events"
         ]
       }
     },
@@ -3574,6 +4165,130 @@
         ]
       }
     },
+    "/api/v1/runtime/bootstrap-check": {
+      "post": {
+        "operationId": "runtime_bootstrap_check_api_v1_runtime_bootstrap_check_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RuntimeBootstrapStartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_RuntimeActionData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Runtime Bootstrap Check",
+        "tags": [
+          "runtime"
+        ]
+      }
+    },
+    "/api/v1/runtime/bootstrap-start": {
+      "post": {
+        "operationId": "runtime_bootstrap_start_api_v1_runtime_bootstrap_start_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RuntimeBootstrapStartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_RuntimeActionData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Runtime Bootstrap Start",
+        "tags": [
+          "runtime"
+        ]
+      }
+    },
+    "/api/v1/runtime/force-stop": {
+      "post": {
+        "operationId": "runtime_force_stop_api_v1_runtime_force_stop_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_RuntimeActionData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Runtime Force Stop",
+        "tags": [
+          "runtime"
+        ]
+      }
+    },
+    "/api/v1/runtime/pause": {
+      "post": {
+        "operationId": "runtime_pause_api_v1_runtime_pause_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_RuntimeActionData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Runtime Pause",
+        "tags": [
+          "runtime"
+        ]
+      }
+    },
     "/api/v1/runtime/restart": {
       "post": {
         "operationId": "runtime_restart_api_v1_runtime_restart_post",
@@ -3755,6 +4470,69 @@
         "summary": "Update Settings",
         "tags": [
           "settings"
+        ]
+      }
+    },
+    "/api/v1/shell/schedule-status": {
+      "get": {
+        "operationId": "get_schedule_status_api_v1_shell_schedule_status_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Schedule Status",
+        "tags": [
+          "shell"
+        ]
+      }
+    },
+    "/api/v1/shell/schedule/tick": {
+      "post": {
+        "operationId": "apply_schedule_tick_api_v1_shell_schedule_tick_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Apply Schedule Tick",
+        "tags": [
+          "shell"
+        ]
+      }
+    },
+    "/api/v1/shell/tray-state": {
+      "get": {
+        "operationId": "get_tray_state_api_v1_shell_tray_state_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Tray State",
+        "tags": [
+          "shell"
         ]
       }
     }

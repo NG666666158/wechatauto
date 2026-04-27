@@ -65,6 +65,7 @@ class SettingsPatchRequest(StrictRequestModel):
     knowledge_chunk_overlap: int | None = Field(None, ge=0, le=5000)
     run_silently: bool | None = None
     esc_action: str | None = Field(None, max_length=32)
+    force_stop_hotkey: str | None = Field(None, max_length=64)
     schedule_enabled: bool | None = None
     schedule_blocks: list[ScheduleBlockPatchRequest] | None = Field(None, max_length=32)
     privacy: PrivacyPolicyPatchRequest | None = None

@@ -937,14 +937,20 @@ P2-7 当前落地：
   - 固化 `docs/api-contract/openapi.snapshot.json`。
   - 测试要求：新增/删除/改名端点时必须显式更新 snapshot。
   - 保持输出排序稳定，减少无意义 diff。
+  - 已完成：`scripts/test_wechat_ai_api_contract_unit.py` 新增快照一致性测试，实时生成 OpenAPI/contract 并与 `docs/api-contract/` 内快照比较。
+  - 已完成：`scripts/export_api_contract.py --check` 支持只校验不写文件；快照漂移时返回非 0 并提示更新命令。
 - P4-6 前端 mock fixtures：输出 dashboard/settings/conversation/send/knowledge/logs 示例 JSON。
   - 目录建议：`desktop_app/frontend/fixtures/api/` 或 `docs/api-contract/fixtures/`。
   - 覆盖 5 个一级页面：首页、消息、客户、知识库、设置。
   - 每个 fixture 保持真实 `ApiResponse` 外壳：`success/data/error/trace_id`。
+  - 已完成：新增 `scripts/export_api_fixtures.py`，导出 23 个 fixture 到 `docs/api-contract/fixtures/`，覆盖首页、消息、客户、知识库、设置所需主要 API。
+  - 已完成：新增 fixtures 快照测试和 `--check` 模式，前端联调前可直接校验样例是否与当前后端契约一致。
 - P4-7 事件推送契约预留：先冻结事件类型和 payload，再实现 SSE。
   - 事件外壳：`{id,type,timestamp,data,trace_id}`。
   - 事件类型第一批：`runtime.status`、`message.received`、`message.sent`、`knowledge.progress`、`log.event`、`error`。
   - P6 再实现 `GET /api/v1/events` SSE；P4 只冻结 schema 和 fixtures。
+  - 已完成：新增 `wechat_ai/server/schemas/events.py` 和 `scripts/export_event_contract.py`，输出 `docs/api-contract/event-contract.json` 作为事件契约基线。
+  - 已完成：新增事件契约快照测试，锁定 envelope 字段和首批 6 类事件 payload 结构。
 
 #### P5 前端逐页接入
 
@@ -952,42 +958,77 @@ P2-7 当前落地：
 
 - P5-1 前端 API 基建：`apiClient`、`ApiResponse<T>`、base URL、loading/error/empty 组件。
 - P5-2 首页接入：dashboard/runtime/logs/environment，启动/停止/重启按钮。
+  - 已完成第一版：新增 `desktop_app/frontend/lib/api.ts`，冻结前端 `ApiResponse<T>`、dashboard/runtime/logs/environment 类型和基础 runtime action 方法。
+  - 已完成第一版：新增 `components/api-state.tsx` 和前端类型契约测试；首页已改为 client-side 调用 dashboard/runtime/logs/environment，并提供启动/暂停/重启守护动作。
 - P5-3 设置页接入：settings/privacy 读写、保存状态、敏感开关二次确认。
+  - 已完成第一版：`/settings` 页面接入 `GET/PATCH /settings` 与 `GET/PATCH /privacy/policy`，支持自动回复、工作时间、回复风格、新客户建档、敏感审核、日志/记忆保留、知识库分块等设置读写。
+  - 已完成第一版：关闭“敏感消息先审核”时增加二次确认；保存成功和失败均有页面反馈。
 - P5-4 消息页只读接入：conversations/detail/control 展示。
+  - 已完成第一版：`/messages` 页面接入 `GET /conversations`、`GET /conversations/{conversation_id}` 与会话控制状态展示，支持会话搜索、详情消息流、最近入站消息提示和人工接管/暂停/黑名单只读状态。
+  - 已完成第一版：发送输入框、AI 建议发送、重新生成、人工接管按钮保持禁用，避免 P5-5 前误触真实发送链路。
 - P5-5 消息页闭环：suggest/send/control patch，处理 blocked/failed/unconfirmed/not_implemented。
+  - 已完成第一版：`/messages` 页面接入 `POST /conversations/{conversation_id}/suggest`，可基于最近入站消息生成建议并写入草稿。
+  - 已完成第一版：接入 `POST /conversations/{conversation_id}/send`，发送前增加浏览器确认；成功后刷新会话，`blocked/failed/unconfirmed/not_implemented` 等业务状态会展示在页面侧栏，不伪装成成功。
+  - 已完成第一版：接入 `PATCH /controls/conversations/{conversation_id}`，支持人工接管、暂停会话、白名单、黑名单的页面切换。
 - P5-6 客户身份页：customers、identity drafts/candidates、自我身份全局编辑。
+  - 已完成第一版：`/customers` 页面接入 `GET /customers`、`GET /customers/{customer_id}`，支持客户搜索、客户详情、标签/备注/最近联系展示。
+  - 已完成第一版：接入 `GET /identity/drafts` 与 `GET /identity/candidates`，在右侧待确认客户区域展示身份草稿和疑似候选数量。
+  - 已完成第一版：接入 `GET/PATCH /identity/self/global`，支持在客户页编辑全局自我身份名称和身份事实；保存失败/成功均有页面反馈。
 - P5-7 知识库页：新增 `/knowledge` 页面和 sidebar，接 status/search/import/web-build。
+  - 已完成第一版：新增 `/knowledge` 页面和 sidebar 入口，接入 `GET /knowledge/status` 展示索引状态、文档数、片段数、支持格式和最近构建时间。
+  - 已完成第一版：接入 `GET /knowledge/search`，支持输入问题检索本地知识库并展示片段、相关度和 chunk id。
+  - 已完成第一版：接入 `POST /knowledge/import` 与 `POST /knowledge/web-build`，支持填写/拖入文件路径后触发本地拆分入库和联网扩库，页面展示最近任务结果。
 - P5-8 前端联调验收：空态、错误态、后端未启动、微信未运行、`npm run build`。
+  - 已完成第一版：新增 `npm run verify:p5`，验收五个一级页面、知识库侧边栏顺序、API 客户端覆盖、后端离线错误态、消息发送确认和知识库入库/扩库入口。
+  - 已完成第一版：P5 验收三件套通过：`npm run verify:p5`、`npx tsc --noEmit --pretty false`、`npm run build`。
+  - 已完成第一版：本地开发服务五个页面路由均可访问：`/`、`/messages`、`/customers`、`/knowledge`、`/settings`。
 
 #### P6 SSE 实时推送
 
 目标：前端不再高频轮询状态，先做单向事件流。
 
 - P6-1 定义事件 schema：`{id,type,timestamp,data,trace_id}`。
+  - 已完成第一版：沿用 P4 冻结的事件外壳，并新增前端 `ServerEventEnvelope` 类型。
 - P6-2 实现轻量事件中心和 `GET /api/v1/events` SSE。
+  - 已完成第一版：新增内存 `EventBus`、SSE 格式化和 `GET /api/v1/events`；支持 `replay` 历史回放、`once=true` 诊断模式和心跳。
 - P6-3 接入 runtime/logs/conversations/controls/knowledge/settings/environment 关键变化。
+  - 已完成第一版：runtime start/stop/restart 发布 `runtime.status`；消息发送发布 `message.sent`；会话控制、设置、隐私策略和保留策略发布 `log.event`；知识库导入/联网扩库发布 `knowledge.progress`。
+  - 已补完后半段第一版：真实守护循环在 unread/active 两条链路都会写入 `message_received` 运行时日志；服务端通过 `RuntimeEventRelay` 把日志桥接为 `message.received`、`message.sent`、`log.event`、`error`，并把微信窗口探测变化桥接为 `log.event(event_type=window.environment.changed)`。
+  - 后续保留项：如需更细粒度的窗口焦点/最小化恢复动作事件，可继续拆出专门的 `window.*` typed events。
 - P6-4 前端接 EventSource，替代首页/消息/日志高频轮询。
+  - 已完成第一版：新增 `desktop_app/frontend/lib/events.ts` 和 `desktop_app/frontend/hooks/use-server-events.ts`；首页监听 `runtime.status/log.event` 后刷新运行状态，消息页监听 `message.sent/message.received/log.event` 后刷新会话与详情，知识库页监听 `knowledge.progress` 后刷新入库状态。
+  - 已补完后半段第一版：layout 级新增全局事件监听器和 toast 通知，能够消费新消息、窗口环境变化、运行时错误和锚点丢失等日志事件。
+  - 后续保留项：当前页面仍保留必要的手动刷新作为降级路径，未来可继续补独立日志页/通知中心。
 - P6-5 断线重连和事件丢失策略。
+  - 已完成第一版：服务端支持 `replay`，前端 hook 默认订阅最近事件并在组件卸载时关闭连接；`EventBus` 已补成真正的增量等待/唤醒模型，SSE 不再只是“初始回放 + 心跳”。
+  - 后续保留项：更完整的 Last-Event-ID 续传、跨页面统一事件缓存和异常提示留到下一批。
 
 #### P7 Electron 桌面壳
 
 目标：把后端和前端组装成可后台运行的桌面应用。
 
 - P7-1 后端进程检测/拉起/复用：检测 `127.0.0.1:8765`，必要时启动 uvicorn。
+  - 已完成第一版：新增 `desktop_app/electron/backend-controller.cjs`，支持健康探测、复用已运行后端、必要时拉起本地 uvicorn，并区分 `reused` 与 `managed` 会话。
 - P7-2 停止策略：关闭窗口不等于停止守护；退出应用才 stop runtime 和后端。
+  - 已完成第一版：新增 `desktop_app/electron/lifecycle-controller.cjs`，窗口关闭默认按静默后台策略隐藏；真正退出时先调用 `/api/v1/runtime/stop`，再停止由壳层拉起的 managed backend。
 - P7-3 托盘菜单：开始、暂停、停止、显示窗口、打开日志目录、退出。
+  - 已完成第一版：新增 `desktop_app/electron/shell-controller.cjs` 与 `main.cjs` 托盘接线；当前已支持显示主窗口、开始守护、暂停守护、停止守护、退出应用五项基础菜单，并根据后端 `tray-state` 动态更新 tooltip 和可用状态。
 - P7-4 静默后台与 ESC：接 `run_silently`、`esc_action`。
+  - 已完成第一版：壳层启动后会读取 `/api/v1/settings` 中的 `run_silently` 与 `esc_action`；`ESC` 目前支持 `pause / stop / hide / quit` 四类动作，并在 `run_silently=true` 时优先隐藏窗口。
 - P7-5 定时启停：壳层定时 tick 调用后端 schedule。
+  - 已完成第一版：后端新增 `/api/v1/shell/schedule-status` 与 `/api/v1/shell/schedule/tick`；Electron 壳启动后会读取 schedule 状态，并按本地 shell 偏好中的 `scheduleTickIntervalSeconds` 周期性调用 tick，在不把调度逻辑复制进壳层的前提下复用后端 schedule 判定。设置页高级设置已补充“定时巡检间隔”入口。
 - P7-6 开机自启：先做壳层设置，不让 Python 服务自己注册系统启动项。
+  - 已完成第一版：新增 `desktop_app/electron/shell-preferences.cjs`，把 `launchAtLogin` 与定时 tick 间隔保存在壳层本地 `shell-preferences.json`；壳层启动时通过 Electron `setLoginItemSettings` 同步开机自启，不让 Python 服务自己写系统启动项。设置页高级设置已补充“开机自启”入口，并在浏览器开发态优雅降级为不可编辑。
 
 #### P8 长跑验收
 
-目标：形成发布前必跑门槛。
+目标：把桌面客户端冻结成“可长期使用的运营控制台”，先验收身份链路、知识链路、桌面壳可用性，再验收长跑稳定性。
 
-- P8-1 新增长跑 observer 脚本。
-- P8-2 固化 30 分钟冒烟、2 小时稳定性、8 小时长跑报告格式。
-- P8-3 覆盖微信关闭、最小化、网络断开、模型失败、发送确认失败。
-- P8-4 验收标准：无崩溃、无重复发送、无无限日志膨胀、stop 后能恢复。
+- P8-1 身份提示词链路验收：验证“用户/自我身份编辑 -> prompt evidence -> 模型回答”。
+- P8-2 知识库检索链路验收：验证“本地导入/联网扩库 -> retrieval evidence -> 回答上下文”。
+- P8-3 桌面壳操作性验收：设置页、开机自启、定时巡检、窗口加载诊断均可用。
+- P8-4 30 分钟/2 小时/8 小时长跑稳定性验收：固化 JSON 报告和扰动场景清单。
+- P8-5 release checklist 与 runbook：形成发布前门槛和交付文档。
 
 1. 服务层骨架：`wechat_ai/server`、FastAPI、`/api/v1`、ping、health。
 2. API 契约：统一响应结构、错误码、`trace_id`。

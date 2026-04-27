@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import inspect
+import os
+import sys
+import threading
 import time
 from collections import Counter
 from dataclasses import dataclass
 from dataclasses import field
-from typing import Any
+from pathlib import Path
+from typing import Any, Callable
 
 import pyautogui
 
@@ -16,6 +20,7 @@ from pyweixin.Uielements import Texts as _Texts
 from pyweixin.WinSettings import SystemSettings
 
 from .config import MiniMaxSettings, ProfileSettings, ReplySettings
+from .app.conversation_store import ConversationStore
 from .identity import IdentityRawSignal, IdentityResolver
 from .logging_utils import JsonlEventLogger
 from .memory.memory_store import MemoryStore
@@ -23,6 +28,7 @@ from .message_queue import IncomingMessageEvent, MessageEventQueue
 from .minimax_provider import MiniMaxProvider
 from .models import Message
 from .orchestration.reply_pipeline import ReplyPipeline, ScenePrompts
+from . import paths
 from .paths import KNOWLEDGE_DIR, LOGS_DIR, MEMORY_DIR, bootstrap_data_dirs
 from .profile.profile_store import ProfileStore
 from .rag.embeddings import FakeEmbeddings
@@ -40,6 +46,125 @@ class UnreadMessageRecord:
     text: str
     sender_name: str = ""
     signature_key: str = ""
+
+
+_FORCE_STOP_VK_CODES = {
+    "ctrl": 0x11,
+    "control": 0x11,
+    "shift": 0x10,
+    "alt": 0x12,
+    "esc": 0x1B,
+    "escape": 0x1B,
+    "f1": 0x70,
+    "f2": 0x71,
+    "f3": 0x72,
+    "f4": 0x73,
+    "f5": 0x74,
+    "f6": 0x75,
+    "f7": 0x76,
+    "f8": 0x77,
+    "f9": 0x78,
+    "f10": 0x79,
+    "f11": 0x7A,
+    "f12": 0x7B,
+}
+
+
+@dataclass(slots=True)
+class ForceStopHotkeyMonitor:
+    hotkey: str
+    key_codes: tuple[int, ...]
+    _armed: bool = False
+
+    def poll(self) -> bool:
+        if not self.key_codes or not sys.platform.startswith("win"):
+            return False
+        try:
+            import ctypes
+
+            user32 = ctypes.windll.user32
+        except Exception:
+            return False
+        pressed = all(bool(user32.GetAsyncKeyState(code) & 0x8000) for code in self.key_codes)
+        if pressed and not self._armed:
+            self._armed = True
+            return True
+        if not pressed:
+            self._armed = False
+        return False
+
+
+def _build_force_stop_hotkey_monitor(hotkey: str | None) -> ForceStopHotkeyMonitor | None:
+    normalized = str(hotkey or "").strip().lower()
+    if not normalized or normalized in {"off", "none", "disabled"}:
+        return None
+    parts = tuple(part.strip() for part in normalized.split("+") if part.strip())
+    if not parts:
+        return None
+    try:
+        key_codes = tuple(_FORCE_STOP_VK_CODES[part] for part in parts)
+    except KeyError:
+        return None
+    return ForceStopHotkeyMonitor(hotkey=normalized, key_codes=key_codes)
+
+
+class EmergencyStopWatcher:
+    def __init__(
+        self,
+        *,
+        hotkey_monitor: object | None = None,
+        stop_file: str | os.PathLike[str] | None = None,
+        on_trigger: Callable[[str], None] | None = None,
+        poll_interval_seconds: float = 0.05,
+    ) -> None:
+        self.hotkey_monitor = hotkey_monitor
+        self.stop_file = Path(stop_file) if stop_file else None
+        self.on_trigger = on_trigger or (lambda reason: os._exit(130))
+        self.poll_interval_seconds = max(float(poll_interval_seconds), 0.01)
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> "EmergencyStopWatcher":
+        if self._thread is not None:
+            return self
+        self._thread = threading.Thread(target=self._run, name="wechat-ai-emergency-stop", daemon=True)
+        self._thread.start()
+        return self
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    def _run(self) -> None:
+        while not self._stop_event.wait(self.poll_interval_seconds):
+            reason = self._poll_reason()
+            if reason:
+                self.on_trigger(reason)
+                return
+
+    def _poll_reason(self) -> str:
+        poll = getattr(self.hotkey_monitor, "poll", None)
+        if callable(poll):
+            try:
+                if bool(poll()):
+                    return "hotkey"
+            except Exception:
+                pass
+        if self.stop_file is not None:
+            try:
+                if _stop_file_requested(self.stop_file):
+                    return "stop_file"
+            except Exception:
+                pass
+        return ""
+
+
+def _stop_file_requested(path: Path) -> bool:
+    if not path.exists():
+        return False
+    try:
+        return bool(path.read_text(encoding="utf-8", errors="ignore").strip())
+    except OSError:
+        return True
 
 
 def _build_profile_store(profile_settings: ProfileSettings) -> ProfileStore:
@@ -62,6 +187,10 @@ def _build_memory_store():
 
 def _build_event_logger():
     return JsonlEventLogger(path=LOGS_DIR / "runtime_events.jsonl")
+
+
+def _build_conversation_store():
+    return ConversationStore(path=paths.DATA_DIR / "app" / "conversations.json")
 
 
 def _build_identity_resolver():
@@ -131,6 +260,7 @@ class WeChatAIApp:
         default_factory=lambda: ReplyScheduler(merge_window_seconds=3.0)
     )
     identity_resolver: IdentityResolver = field(default_factory=_build_identity_resolver)
+    conversation_store: ConversationStore = field(default_factory=_build_conversation_store)
     send_confirmer: Any | None = None
     stop_event: Any | None = None
 
@@ -185,6 +315,65 @@ class WeChatAIApp:
     def _stop_requested(self) -> bool:
         is_set = getattr(self.stop_event, "is_set", None)
         return bool(callable(is_set) and is_set())
+
+    def _dismiss_wechat_context_menu(self) -> None:
+        try:
+            pyautogui.press("esc", _pause=False)
+        except TypeError:
+            try:
+                pyautogui.press("esc")
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _is_my_bubble_safe(self, main_window: Any, item: Any) -> bool:
+        if hasattr(item, "mine"):
+            return bool(getattr(item, "mine"))
+        checker = getattr(Tools, "is_my_bubble", None)
+        if not callable(checker):
+            return False
+        try:
+            return bool(checker(main_window, item))
+        finally:
+            # pyweixin 4.1 detects bubble ownership by right-clicking the
+            # message. Always close the context menu before the next UI action.
+            self._dismiss_wechat_context_menu()
+
+    def _parse_message_content_compat(self, item: Any, *, friendtype: str) -> tuple[str, str, str]:
+        parser = getattr(Tools, "parse_message_content", None)
+        if callable(parser):
+            return parser(ListItem=item, friendtype=friendtype)
+        text = _safe_item_text(item)
+        sender = self._extract_sender_from_item_buttons(item)
+        return sender, text, "text"
+
+    def _extract_sender_from_item_buttons(self, item: Any) -> str:
+        children = getattr(item, "children", None)
+        if not callable(children):
+            return ""
+        try:
+            containers = list(children())
+        except Exception:
+            return ""
+        for container in containers:
+            nested_children = getattr(container, "children", None)
+            if not callable(nested_children):
+                continue
+            try:
+                buttons = list(nested_children(control_type="Button"))
+            except TypeError:
+                try:
+                    buttons = list(nested_children())
+                except Exception:
+                    buttons = []
+            except Exception:
+                buttons = []
+            for button in buttons:
+                sender = _safe_item_text(button)
+                if sender:
+                    return sender
+        return ""
 
     def _log_send_skipped_by_stop_event(self, session_name: str, is_group: bool, stage: str) -> None:
         self._debug(f"send skipped by stop_event session={session_name!r} stage={stage}")
@@ -317,10 +506,10 @@ class WeChatAIApp:
                 initial_runtime_id = runtime_id
                 if new_message.class_name() != "mmui::ChatTextItemView":
                     continue
-                if Tools.is_my_bubble(main_window, new_message):
+                if self._is_my_bubble_safe(main_window, new_message):
                     continue
-                message_sender, message_content, _message_type = Tools.parse_message_content(
-                    ListItem=new_message,
+                message_sender, message_content, _message_type = self._parse_message_content_compat(
+                    new_message,
                     friendtype="群聊",
                 )
                 text = str(message_content).strip()
@@ -454,11 +643,11 @@ class WeChatAIApp:
             try:
                 if item.class_name() != "mmui::ChatTextItemView":
                     continue
-                if hasattr(Tools, "is_my_bubble") and Tools.is_my_bubble(main_window, item):
+                if self._is_my_bubble_safe(main_window, item):
                     continue
-                message_sender, message_content, _message_type = Tools.parse_message_content(
-                    ListItem=item,
-                    friendtype="缇よ亰",
+                message_sender, message_content, _message_type = self._parse_message_content_compat(
+                    item,
+                    friendtype="群聊",
                 )
             except Exception as exc:
                 self._debug(f"parse group unread visible item failed error={type(exc).__name__}: {exc}")
@@ -575,6 +764,61 @@ class WeChatAIApp:
             contexts=list(contexts),
         )
 
+    def _build_conversation_id(self, session_name: str, is_group: bool) -> str:
+        return f"{'group' if is_group else 'friend'}:{session_name}"
+
+    def _log_message_received(
+        self,
+        *,
+        session_name: str,
+        text: str,
+        is_group: bool,
+        sender_name: str | None = None,
+        source: str,
+    ) -> None:
+        self._log_event(
+            "message_received",
+            conversation_id=self._build_conversation_id(session_name, is_group),
+            chat_id=session_name,
+            chat_type="group" if is_group else "friend",
+            sender=sender_name or session_name,
+            text=text,
+            is_group=is_group,
+            source=source,
+        )
+        self._record_conversation_message(
+            conversation_id=self._build_conversation_id(session_name, is_group),
+            sender=sender_name or session_name,
+            text=text,
+            direction="incoming",
+            title=session_name,
+            is_group=is_group,
+        )
+
+    def _record_conversation_message(
+        self,
+        *,
+        conversation_id: str,
+        sender: str,
+        text: str,
+        direction: str,
+        title: str,
+        is_group: bool,
+        delivery_status: str = "sent",
+    ) -> None:
+        try:
+            self.conversation_store.append_message(
+                conversation_id,
+                sender=sender,
+                text=text,
+                direction=direction,
+                title=title,
+                is_group=is_group,
+                delivery_status=delivery_status,
+            )
+        except Exception as exc:
+            self._debug(f"record_conversation_message failed conversation_id={conversation_id!r} error={type(exc).__name__}: {exc}")
+
     def _send_reply(
         self,
         session_name: str,
@@ -655,6 +899,15 @@ class WeChatAIApp:
             else:
                 reason = ""
             if not confirmed:
+                self._record_conversation_message(
+                    conversation_id=self._build_conversation_id(session_name, is_group),
+                    sender="assistant",
+                    text=reply,
+                    direction="outgoing",
+                    title=session_name,
+                    is_group=is_group,
+                    delivery_status="unconfirmed",
+                )
                 result["errors"] += 1
                 self._log_event(
                     "message_send_unconfirmed",
@@ -678,6 +931,14 @@ class WeChatAIApp:
             used_fallback=reply == self.fallback_reply,
             confirmed=confirmed,
             confirmation_required=confirmation_required,
+        )
+        self._record_conversation_message(
+            conversation_id=self._build_conversation_id(session_name, is_group),
+            sender="assistant",
+            text=reply,
+            direction="outgoing",
+            title=session_name,
+            is_group=is_group,
         )
         return result
 
@@ -848,6 +1109,13 @@ class WeChatAIApp:
                     continue
                 if not is_group and self._has_processed_signature(legacy_signature, now):
                     continue
+                self._log_message_received(
+                    session_name=session_name,
+                    text=text,
+                    is_group=is_group,
+                    sender_name=sender_name,
+                    source="unread",
+                )
                 pending_messages.append(text)
                 pending_signatures.append(signature)
                 if is_group:
@@ -902,8 +1170,8 @@ class WeChatAIApp:
         if not is_group:
             return item.window_text().strip(), ""
         try:
-            message_sender, message_content, _message_type = Tools.parse_message_content(
-                ListItem=item,
+            message_sender, message_content, _message_type = self._parse_message_content_compat(
+                item,
                 friendtype="群聊",
             )
             return str(message_content).strip(), self._normalize_group_sender_name("", str(message_sender))
@@ -967,7 +1235,7 @@ class WeChatAIApp:
                 continue
             if item.class_name() != "mmui::ChatTextItemView":
                 continue
-            if Tools.is_my_bubble(main_window, item):
+            if self._is_my_bubble_safe(main_window, item):
                 continue
             event_sender_name = parsed_sender_name if is_group else session_name
             cross_source_signature = self._message_dedupe_signature(
@@ -987,6 +1255,13 @@ class WeChatAIApp:
                 continue
             if is_group and parsed_sender_name and sender_name is None:
                 sender_name = parsed_sender_name
+            self._log_message_received(
+                session_name=session_name,
+                text=text,
+                is_group=is_group,
+                sender_name=event_sender_name,
+                source="active",
+            )
             events.append(
                 IncomingMessageEvent(
                     session_name=session_name,
@@ -1107,6 +1382,8 @@ class WeChatAIApp:
         heartbeat_interval: float = 60.0,
         error_backoff_seconds: float = 5.0,
         stop_event: object | None = None,
+        stop_hotkey: str | None = None,
+        stop_hotkey_monitor: object | None = None,
     ) -> dict[str, int | float]:
         duration_seconds = Tools.match_duration(duration)
         if duration_seconds is None:
@@ -1131,13 +1408,36 @@ class WeChatAIApp:
         previous_stop_event = self.stop_event
         if stop_event is not None:
             self.stop_event = stop_event
+        hotkey_monitor = stop_hotkey_monitor if stop_hotkey_monitor is not None else _build_force_stop_hotkey_monitor(stop_hotkey)
         end_timestamp = None if forever else time.time() + duration_seconds
         next_heartbeat_at = time.time() + heartbeat_interval if heartbeat_interval > 0 else None
         consecutive_loop_errors = 0
         stop_event_logged = False
+        force_stop_logged = False
 
         def stop_requested() -> bool:
             return self._stop_requested()
+
+        def hotkey_stop_requested() -> bool:
+            nonlocal force_stop_logged
+            if hotkey_monitor is None or not hasattr(hotkey_monitor, "poll"):
+                return False
+            if not bool(getattr(hotkey_monitor, "poll")()):
+                return False
+            if not force_stop_logged:
+                hotkey_name = getattr(hotkey_monitor, "hotkey", stop_hotkey or "unknown")
+                self._debug(f"global auto reply force stop hotkey triggered hotkey={hotkey_name!r}")
+                self._log_event(
+                    "force_stop_hotkey_triggered",
+                    hotkey=hotkey_name,
+                    polls=stats["polls"],
+                    sessions=stats["sessions"],
+                    friend_replies=stats["friend_replies"],
+                    group_replies=stats["group_replies"],
+                    errors=stats["errors"],
+                )
+                force_stop_logged = True
+            return True
 
         def record_stop_event() -> None:
             nonlocal stop_event_logged
@@ -1155,14 +1455,30 @@ class WeChatAIApp:
             stop_event_logged = True
 
         def sleep_or_stop(seconds: float) -> bool:
-            if stop_event is not None and hasattr(stop_event, "wait"):
-                return bool(getattr(stop_event, "wait")(seconds))
-            time.sleep(seconds)
-            return stop_requested()
+            if hotkey_monitor is None:
+                if stop_event is not None and hasattr(stop_event, "wait"):
+                    return bool(getattr(stop_event, "wait")(seconds))
+                time.sleep(seconds)
+                return stop_requested()
+            if seconds <= 0:
+                return stop_requested() or hotkey_stop_requested()
+            deadline = time.time() + seconds
+            while True:
+                if stop_requested() or hotkey_stop_requested():
+                    return True
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    return stop_requested() or hotkey_stop_requested()
+                chunk = min(0.1, remaining)
+                if stop_event is not None and hasattr(stop_event, "wait"):
+                    if bool(getattr(stop_event, "wait")(chunk)):
+                        return True
+                    continue
+                time.sleep(chunk)
 
         while True:
             now = time.time()
-            if stop_requested():
+            if stop_requested() or hotkey_stop_requested():
                 record_stop_event()
                 break
             if end_timestamp is not None and now >= end_timestamp:
@@ -1197,7 +1513,7 @@ class WeChatAIApp:
                 consecutive_loop_errors = 0
                 if end_timestamp is not None and time.time() >= end_timestamp:
                     break
-                if stop_requested():
+                if stop_requested() or hotkey_stop_requested():
                     record_stop_event()
                     break
                 if sleep_or_stop(poll_interval):

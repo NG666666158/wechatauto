@@ -1,0 +1,12 @@
+{
+  "data": {
+    "display_name": "碱水",
+    "identity_facts": [
+      "我是产品顾问",
+      "面对老师或家人时会切换相应身份事实"
+    ]
+  },
+  "error": null,
+  "success": true,
+  "trace_id": "fixture-customers-identity-self"
+}

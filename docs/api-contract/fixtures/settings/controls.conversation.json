@@ -1,0 +1,12 @@
+{
+  "data": {
+    "blacklisted": false,
+    "conversation_id": "friend:zhang",
+    "human_takeover": false,
+    "paused": false,
+    "whitelisted": false
+  },
+  "error": null,
+  "success": true,
+  "trace_id": "fixture-settings-control"
+}

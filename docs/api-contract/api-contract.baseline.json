@@ -3,7 +3,7 @@
   "api_version": "0.1.0",
   "base_path": "/api/v1",
   "contract_version": "p4-baseline-v1",
-  "endpoint_count": 32,
+  "endpoint_count": 42,
   "endpoints": [
     {
       "id": "get_api_v1_controls_conversations_conversation_id",
@@ -138,6 +138,36 @@
       ]
     },
     {
+      "id": "get_api_v1_debug_knowledge_acceptance",
+      "method": "GET",
+      "path": "/api/v1/debug/knowledge-acceptance",
+      "request_schema": "",
+      "response_codes": [
+        "200",
+        "422"
+      ],
+      "response_schema": "ApiResponse_KnowledgeAcceptanceSnapshotData_",
+      "summary": "Knowledge Acceptance",
+      "tags": [
+        "debug"
+      ]
+    },
+    {
+      "id": "get_api_v1_debug_prompt_preview",
+      "method": "GET",
+      "path": "/api/v1/debug/prompt-preview",
+      "request_schema": "",
+      "response_codes": [
+        "200",
+        "422"
+      ],
+      "response_schema": "ApiResponse_PromptAcceptancePreviewData_",
+      "summary": "Prompt Preview",
+      "tags": [
+        "debug"
+      ]
+    },
+    {
       "id": "get_api_v1_environment_wechat",
       "method": "GET",
       "path": "/api/v1/environment/wechat",
@@ -163,6 +193,21 @@
       "summary": "Get Error Catalog",
       "tags": [
         "system"
+      ]
+    },
+    {
+      "id": "get_api_v1_events",
+      "method": "GET",
+      "path": "/api/v1/events",
+      "request_schema": "",
+      "response_codes": [
+        "200",
+        "422"
+      ],
+      "response_schema": "",
+      "summary": "Stream Events",
+      "tags": [
+        "events"
       ]
     },
     {
@@ -383,6 +428,64 @@
       ]
     },
     {
+      "id": "post_api_v1_runtime_bootstrap_check",
+      "method": "POST",
+      "path": "/api/v1/runtime/bootstrap-check",
+      "request_schema": "RuntimeBootstrapStartRequest",
+      "response_codes": [
+        "200",
+        "422"
+      ],
+      "response_schema": "ApiResponse_RuntimeActionData_",
+      "summary": "Runtime Bootstrap Check",
+      "tags": [
+        "runtime"
+      ]
+    },
+    {
+      "id": "post_api_v1_runtime_bootstrap_start",
+      "method": "POST",
+      "path": "/api/v1/runtime/bootstrap-start",
+      "request_schema": "RuntimeBootstrapStartRequest",
+      "response_codes": [
+        "200",
+        "422"
+      ],
+      "response_schema": "ApiResponse_RuntimeActionData_",
+      "summary": "Runtime Bootstrap Start",
+      "tags": [
+        "runtime"
+      ]
+    },
+    {
+      "id": "post_api_v1_runtime_force_stop",
+      "method": "POST",
+      "path": "/api/v1/runtime/force-stop",
+      "request_schema": "",
+      "response_codes": [
+        "200"
+      ],
+      "response_schema": "ApiResponse_RuntimeActionData_",
+      "summary": "Runtime Force Stop",
+      "tags": [
+        "runtime"
+      ]
+    },
+    {
+      "id": "post_api_v1_runtime_pause",
+      "method": "POST",
+      "path": "/api/v1/runtime/pause",
+      "request_schema": "",
+      "response_codes": [
+        "200"
+      ],
+      "response_schema": "ApiResponse_RuntimeActionData_",
+      "summary": "Runtime Pause",
+      "tags": [
+        "runtime"
+      ]
+    },
+    {
       "id": "post_api_v1_runtime_restart",
       "method": "POST",
       "path": "/api/v1/runtime/restart",
@@ -468,6 +571,48 @@
       "tags": [
         "settings"
       ]
+    },
+    {
+      "id": "get_api_v1_shell_schedule_status",
+      "method": "GET",
+      "path": "/api/v1/shell/schedule-status",
+      "request_schema": "",
+      "response_codes": [
+        "200"
+      ],
+      "response_schema": "ApiResponse_dict_str__object__",
+      "summary": "Get Schedule Status",
+      "tags": [
+        "shell"
+      ]
+    },
+    {
+      "id": "post_api_v1_shell_schedule_tick",
+      "method": "POST",
+      "path": "/api/v1/shell/schedule/tick",
+      "request_schema": "",
+      "response_codes": [
+        "200"
+      ],
+      "response_schema": "ApiResponse_dict_str__object__",
+      "summary": "Apply Schedule Tick",
+      "tags": [
+        "shell"
+      ]
+    },
+    {
+      "id": "get_api_v1_shell_tray_state",
+      "method": "GET",
+      "path": "/api/v1/shell/tray-state",
+      "request_schema": "",
+      "response_codes": [
+        "200"
+      ],
+      "response_schema": "ApiResponse_dict_str__object__",
+      "summary": "Get Tray State",
+      "tags": [
+        "shell"
+      ]
     }
   ],
   "frontend_pages": {
@@ -479,7 +624,9 @@
     ],
     "home": [
       "/api/v1/dashboard/summary",
-      "/api/v1/runtime/status"
+      "/api/v1/runtime/status",
+      "/api/v1/runtime/bootstrap-check",
+      "/api/v1/runtime/bootstrap-start"
     ],
     "knowledge": [
       "/api/v1/knowledge/status",
@@ -501,7 +648,7 @@
       "/api/v1/errors/catalog"
     ]
   },
-  "schema_count": 71,
+  "schema_count": 78,
   "schemas": [
     "ApiErrorPayload",
     "ApiResponse_ConversationControlData_",
@@ -509,10 +656,12 @@
     "ApiResponse_CustomerData_",
     "ApiResponse_DashboardSummaryData_",
     "ApiResponse_ErrorCatalogData_",
+    "ApiResponse_KnowledgeAcceptanceSnapshotData_",
     "ApiResponse_KnowledgeImportResultData_",
     "ApiResponse_KnowledgeStatusData_",
     "ApiResponse_LogsSummaryData_",
     "ApiResponse_PrivacyPolicyData_",
+    "ApiResponse_PromptAcceptancePreviewData_",
     "ApiResponse_ReplySuggestionData_",
     "ApiResponse_RetentionApplyResultData_",
     "ApiResponse_RuntimeActionData_",
@@ -546,6 +695,7 @@
     "HttpErrorCodeData",
     "IdentityCandidateData",
     "IdentityDraftData",
+    "KnowledgeAcceptanceSnapshotData",
     "KnowledgeFileImportData",
     "KnowledgeImportRequest",
     "KnowledgeImportResultData",
@@ -554,10 +704,14 @@
     "LogsSummaryData",
     "PrivacyPolicyData",
     "PrivacyPolicyPatchRequest",
+    "PromptAcceptancePreviewData",
+    "PromptAcceptanceSelfIdentityData",
     "ReplySuggestionData",
     "ReplySuggestionRequest",
     "RetentionApplyResultData",
     "RuntimeActionData",
+    "RuntimeBootstrapData",
+    "RuntimeBootstrapStartRequest",
     "RuntimeStartRequest",
     "RuntimeStatusData",
     "ScheduleBlockData",

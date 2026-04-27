@@ -1,0 +1,40 @@
+{
+  "data": {
+    "control": {
+      "blacklisted": false,
+      "conversation_id": "friend:zhang",
+      "human_takeover": false,
+      "paused": false,
+      "whitelisted": false
+    },
+    "conversation": {
+      "conversation_id": "friend:zhang",
+      "is_group": false,
+      "latest_message": "请问你们的产品支持试用吗？",
+      "title": "张先生",
+      "unread_count": 1,
+      "updated_at": "2026-04-25T09:41:00+08:00"
+    },
+    "messages": [
+      {
+        "conversation_id": "friend:zhang",
+        "direction": "incoming",
+        "message_id": "msg_001",
+        "sender": "张先生",
+        "sent_at": "2026-04-25T09:41:00+08:00",
+        "text": "请问你们的产品支持试用吗？"
+      },
+      {
+        "conversation_id": "friend:zhang",
+        "direction": "outgoing",
+        "message_id": "msg_002",
+        "sender": "assistant",
+        "sent_at": "2026-04-25T09:41:10+08:00",
+        "text": "支持 7 天试用，我可以先给你发申请方式。"
+      }
+    ]
+  },
+  "error": null,
+  "success": true,
+  "trace_id": "fixture-messages-detail"
+}

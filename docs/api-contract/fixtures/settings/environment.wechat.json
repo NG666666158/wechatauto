@@ -1,0 +1,10 @@
+{
+  "data": {
+    "narrator_required": false,
+    "ui_ready": true,
+    "wechat_running": true
+  },
+  "error": null,
+  "success": true,
+  "trace_id": "fixture-settings-environment"
+}

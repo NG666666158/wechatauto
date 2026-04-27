@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 import sys
+import time
 import types
 import unittest
 from pathlib import Path
@@ -25,6 +26,7 @@ from wechat_ai.reply_engine import ReplyEngine, ScenePrompts  # type: ignore  # 
 def import_wechat_runtime_with_stubs():
     pyautogui_stub = types.ModuleType("pyautogui")
     pyautogui_stub.hotkey = lambda *args, **kwargs: None
+    pyautogui_stub.press = lambda *args, **kwargs: None
 
     pyweixin_stub = types.ModuleType("pyweixin")
     pyweixin_stub.AutoReply = object()
@@ -272,6 +274,45 @@ class GlobalAutoReplyTests(unittest.TestCase):
             ),
         )
 
+    def test_safe_bubble_detection_closes_pyweixin_context_menu(self) -> None:
+        app = self.build_app()
+        calls: list[str] = []
+
+        self.runtime.Tools = types.SimpleNamespace(is_my_bubble=lambda window, item: calls.append("check") or False)
+        self.runtime.pyautogui.press = lambda key, **kwargs: calls.append(f"press:{key}")
+
+        result = app._is_my_bubble_safe(object(), object())
+
+        self.assertFalse(result)
+        self.assertEqual(calls, ["check", "press:esc"])
+
+    def test_parse_message_content_falls_back_to_item_sender_button(self) -> None:
+        app = self.build_app()
+        self.runtime.Tools = types.SimpleNamespace()
+
+        class FakeButton:
+            def window_text(self) -> str:
+                return "群成员A"
+
+        class FakeContainer:
+            def children(self, control_type=None):
+                if control_type == "Button":
+                    return [FakeButton()]
+                return []
+
+        class FakeItem:
+            def window_text(self) -> str:
+                return "@me 群里问一下"
+
+            def children(self, control_type=None):
+                return [FakeContainer()]
+
+        sender, content, message_type = app._parse_message_content_compat(FakeItem(), friendtype="群聊")
+
+        self.assertEqual(sender, "群成员A")
+        self.assertEqual(content, "@me 群里问一下")
+        self.assertEqual(message_type, "text")
+
     def test_process_unread_session_merges_direct_messages_into_one_reply(self) -> None:
         sent_messages: list[tuple[str, list[str]]] = []
         opened_chats: list[str] = []
@@ -334,6 +375,64 @@ class GlobalAutoReplyTests(unittest.TestCase):
         self.assertEqual(result["friend_replies"], 1)
         self.assertEqual(sent_messages, [("Alice", ["reply:there\nhello"])])
 
+    def test_process_unread_session_logs_message_received_events(self) -> None:
+        sent_messages: list[tuple[str, list[str]]] = []
+        logged_events: list[dict[str, object]] = []
+        fake_main_window = self._build_fake_active_chat([("hello", 1, False), ("there", 2, False)])
+
+        self.runtime.Navigator = types.SimpleNamespace(
+            open_dialog_window=lambda friend, is_maximize=False, search_pages=5: fake_main_window
+        )
+        self.runtime.Tools = types.SimpleNamespace(is_group_chat=lambda window: False)
+        self.runtime.Messages = types.SimpleNamespace(
+            pull_messages=lambda friend, number, close_weixin=False, search_pages=5: ["earlier-context"],
+            send_messages_to_friend=lambda friend, messages, close_weixin=False: sent_messages.append((friend, messages)),
+        )
+
+        app = self.build_app()
+        app.engine.event_logger = types.SimpleNamespace(
+            log_event=lambda event_type, **fields: logged_events.append({"event_type": event_type, **fields})
+        )
+
+        result = app.process_unread_session("Alice", ["hello", "there"])
+
+        self.assertEqual(result["friend_replies"], 1)
+        received_events = [event for event in logged_events if event["event_type"] == "message_received"]
+        self.assertEqual(len(received_events), 2)
+        self.assertEqual(received_events[0]["conversation_id"], "friend:Alice")
+        self.assertEqual(received_events[0]["text"], "hello")
+        self.assertEqual(received_events[0]["source"], "unread")
+        self.assertEqual(received_events[1]["text"], "there")
+
+    def test_process_unread_session_records_local_chat_history_in_timeline_order(self) -> None:
+        from wechat_ai.app.conversation_store import ConversationStore
+
+        temp_dir = TMP_ROOT / "runtime_conversation_history" / str(uuid4())
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        sent_messages: list[tuple[str, list[str]]] = []
+        fake_main_window = self._build_fake_active_chat([("hello", 1, False), ("there", 2, False)])
+
+        self.runtime.Navigator = types.SimpleNamespace(
+            open_dialog_window=lambda friend, is_maximize=False, search_pages=5: fake_main_window
+        )
+        self.runtime.Tools = types.SimpleNamespace(is_group_chat=lambda window: False)
+        self.runtime.Messages = types.SimpleNamespace(
+            pull_messages=lambda friend, number, close_weixin=False, search_pages=5: ["earlier-context"],
+            send_messages_to_friend=lambda friend, messages, close_weixin=False: sent_messages.append((friend, messages)),
+        )
+
+        app = self.build_app()
+        app.conversation_store = ConversationStore(temp_dir / "conversations.json")
+
+        result = app.process_unread_session("Alice", ["hello", "there"])
+        detail = app.conversation_store.get_record("friend:Alice")
+        messages = detail["messages"]
+
+        self.assertEqual(result["friend_replies"], 1)
+        self.assertEqual([message["direction"] for message in messages], ["incoming", "incoming", "outgoing"])
+        self.assertEqual([message["text"] for message in messages], ["hello", "there", "reply:hello\nthere"])
+        self.assertEqual(messages[-1]["sender"], "assistant")
+
     def test_send_reply_populates_identity_fields_from_resolver(self) -> None:
         captured_messages: list[object] = []
         self.runtime.Messages = types.SimpleNamespace(
@@ -379,6 +478,10 @@ class GlobalAutoReplyTests(unittest.TestCase):
         self.assertEqual(captured_messages[0].identity_evidence, ["alias_exact_match"])
 
     def test_send_reply_reports_error_when_visual_confirmation_fails(self) -> None:
+        from wechat_ai.app.conversation_store import ConversationStore
+
+        temp_dir = TMP_ROOT / "runtime_unconfirmed_history" / str(uuid4())
+        temp_dir.mkdir(parents=True, exist_ok=True)
         sent_messages: list[tuple[str, list[str]]] = []
         logged_events: list[dict[str, object]] = []
         confirmer_calls: list[dict[str, object]] = []
@@ -390,6 +493,7 @@ class GlobalAutoReplyTests(unittest.TestCase):
         app.engine.event_logger = types.SimpleNamespace(
             log_event=lambda event_type, **fields: logged_events.append({"event_type": event_type, **fields})
         )
+        app.conversation_store = ConversationStore(temp_dir / "conversations.json")
         app.send_confirmer = types.SimpleNamespace(
             confirm_sent=lambda **kwargs: confirmer_calls.append(kwargs) or False
         )
@@ -409,6 +513,10 @@ class GlobalAutoReplyTests(unittest.TestCase):
         unconfirmed_events = [event for event in logged_events if event["event_type"] == "message_send_unconfirmed"]
         self.assertEqual(len(unconfirmed_events), 1)
         self.assertEqual(unconfirmed_events[0]["chat_id"], "Alice")
+        detail = app.conversation_store.get_record("friend:Alice")
+        self.assertEqual([message["direction"] for message in detail["messages"]], ["outgoing"])
+        self.assertEqual(detail["messages"][0]["text"], "reply:hello")
+        self.assertEqual(detail["messages"][0]["delivery_status"], "unconfirmed")
 
     def test_send_reply_counts_reply_after_visual_confirmation_succeeds(self) -> None:
         sent_messages: list[tuple[str, list[str]]] = []
@@ -1063,6 +1171,39 @@ class GlobalAutoReplyTests(unittest.TestCase):
             app._item_signature(fake_main_window.chat_list.children(control_type="ListItem")[-1]),
         )
 
+    def test_process_active_chat_session_logs_message_received_event(self) -> None:
+        sent_messages: list[tuple[str, list[str]]] = []
+        logged_events: list[dict[str, object]] = []
+        fake_main_window = self._build_fake_active_chat([("old", 1, False)], chat_label="Alice")
+        self.runtime.Navigator = types.SimpleNamespace(open_weixin=lambda is_maximize=False: fake_main_window)
+        self.runtime.Tools = types.SimpleNamespace(
+            activate_chatList=lambda chat_list: None,
+            is_group_chat=lambda window: False,
+            is_my_bubble=lambda window, item: item.mine,
+        )
+        self.runtime.Messages = types.SimpleNamespace(
+            send_messages_to_friend=lambda friend, messages, close_weixin=False: sent_messages.append((friend, messages))
+        )
+
+        app = self.build_app()
+        app.engine.event_logger = types.SimpleNamespace(
+            log_event=lambda event_type, **fields: logged_events.append({"event_type": event_type, **fields})
+        )
+
+        app.process_active_chat_session(now=0.0)
+        fake_main_window.chat_list = self._build_fake_active_chat(
+            [("old", 1, False), ("follow-up", 2, False)],
+            chat_label="Alice",
+        ).chat_list
+        app.process_active_chat_session(now=1.0)
+        app.process_active_chat_session(now=4.5)
+
+        received_events = [event for event in logged_events if event["event_type"] == "message_received"]
+        self.assertEqual(len(received_events), 1)
+        self.assertEqual(received_events[0]["conversation_id"], "friend:Alice")
+        self.assertEqual(received_events[0]["text"], "follow-up")
+        self.assertEqual(received_events[0]["source"], "active")
+
     def test_process_active_chat_session_skips_messages_already_handled_by_unread_polling(self) -> None:
         sent_messages: list[tuple[str, list[str]]] = []
         fake_main_window = self._build_fake_active_chat([("old", 1, False)])
@@ -1473,6 +1614,116 @@ class GlobalAutoReplyTests(unittest.TestCase):
         self.assertEqual(sent_messages, [("Alice", ["reply:queued-before-stop"])])
         stop_events = [event for event in logged_events if event["event_type"] == "stop_event_received"]
         self.assertEqual(len(stop_events), 1)
+
+    def test_run_global_auto_reply_force_stop_hotkey_flushes_pending_messages_and_exits(self) -> None:
+        logged_events: list[dict[str, object]] = []
+
+        class FakeHotkeyMonitor:
+            hotkey = "ctrl+shift+f12"
+
+            def __init__(self) -> None:
+                self.polls = 0
+
+            def poll(self) -> bool:
+                self.polls += 1
+                return self.polls >= 2
+
+        class FakeMessages:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def check_new_messages(self, close_weixin=False):
+                self.calls += 1
+                return {}
+
+        fake_monitor = FakeHotkeyMonitor()
+        fake_messages = FakeMessages()
+        self.runtime.Messages = fake_messages
+        self.runtime.Tools = types.SimpleNamespace(match_duration=lambda duration: 999)
+        self.runtime.time = types.SimpleNamespace(
+            sleep=lambda seconds: None,
+            time=iter([0.0, 0.0, 0.1]).__next__,
+        )
+
+        app = self.build_app()
+        app.engine.event_logger = types.SimpleNamespace(
+            log_event=lambda event_type, **fields: logged_events.append({"event_type": event_type, **fields})
+        )
+        app.active_pending_session = "Alice"
+        app.active_pending_is_group = False
+        app.active_pending_messages = ["queued-before-hotkey"]
+        app.active_pending_contexts = ["ctx"]
+        app.active_pending_deadline = 10.0
+
+        sent_messages: list[tuple[str, list[str]]] = []
+        self.runtime.Messages.send_messages_to_friend = lambda friend, messages, close_weixin=False: sent_messages.append(
+            (friend, messages)
+        )
+
+        original_active = self.runtime.WeChatAIApp.process_active_chat_session
+        self.runtime.WeChatAIApp.process_active_chat_session = lambda self, now=None: {
+            "friend_replies": 0,
+            "group_replies": 0,
+            "errors": 0,
+        }
+        try:
+            result = app.run_global_auto_reply(
+                duration="999s",
+                poll_interval=0.5,
+                forever=True,
+                stop_hotkey="ctrl+shift+f12",
+                stop_hotkey_monitor=fake_monitor,
+            )
+        finally:
+            self.runtime.WeChatAIApp.process_active_chat_session = original_active
+
+        self.assertEqual(fake_messages.calls, 1)
+        self.assertEqual(result["friend_replies"], 1)
+        self.assertEqual(sent_messages, [("Alice", ["reply:queued-before-hotkey"])])
+        force_stop_events = [event for event in logged_events if event["event_type"] == "force_stop_hotkey_triggered"]
+        self.assertEqual(len(force_stop_events), 1)
+        self.assertEqual(force_stop_events[0]["hotkey"], "ctrl+shift+f12")
+
+    def test_emergency_stop_watcher_triggers_independently_of_main_loop(self) -> None:
+        triggered: list[str] = []
+
+        class FakeHotkeyMonitor:
+            def __init__(self) -> None:
+                self.polls = 0
+
+            def poll(self) -> bool:
+                self.polls += 1
+                return self.polls >= 1
+
+        watcher = self.runtime.EmergencyStopWatcher(
+            hotkey_monitor=FakeHotkeyMonitor(),
+            on_trigger=triggered.append,
+            poll_interval_seconds=0.01,
+        ).start()
+        try:
+            for _ in range(50):
+                if triggered:
+                    break
+                time.sleep(0.01)
+        finally:
+            watcher.stop()
+
+        self.assertEqual(triggered, ["hotkey"])
+
+    def test_empty_force_stop_file_is_not_treated_as_stop_request(self) -> None:
+        stop_file = TMP_ROOT / f"force_stop_{uuid4().hex}.flag"
+        try:
+            stop_file.write_text("", encoding="utf-8")
+
+            self.assertFalse(self.runtime._stop_file_requested(stop_file))
+
+            stop_file.write_text("stop\n", encoding="utf-8")
+            self.assertTrue(self.runtime._stop_file_requested(stop_file))
+        finally:
+            try:
+                stop_file.unlink()
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":

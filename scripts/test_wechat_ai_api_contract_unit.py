@@ -45,6 +45,8 @@ class ApiContractTests(unittest.TestCase):
         expected_schema_fragments = {
             ("GET", "/api/v1/runtime/status"): "RuntimeStatus",
             ("POST", "/api/v1/runtime/start"): "RuntimeAction",
+            ("POST", "/api/v1/runtime/bootstrap-check"): "RuntimeAction",
+            ("POST", "/api/v1/runtime/bootstrap-start"): "RuntimeAction",
             ("POST", "/api/v1/runtime/stop"): "RuntimeAction",
             ("POST", "/api/v1/runtime/restart"): "RuntimeAction",
             ("GET", "/api/v1/dashboard/summary"): "DashboardSummary",
@@ -110,6 +112,8 @@ class ApiContractTests(unittest.TestCase):
         }
 
         expected_request_schemas = {
+            ("POST", "/api/v1/runtime/bootstrap-check"): "RuntimeBootstrapStartRequest",
+            ("POST", "/api/v1/runtime/bootstrap-start"): "RuntimeBootstrapStartRequest",
             ("PATCH", "/api/v1/settings"): "SettingsPatchRequest",
             ("PATCH", "/api/v1/privacy/policy"): "PrivacyPolicyPatchRequest",
             ("PATCH", "/api/v1/controls/conversations/{conversation_id}"): "ConversationControlPatchRequest",
@@ -139,6 +143,8 @@ class ApiContractTests(unittest.TestCase):
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=True,
         )
 
@@ -153,6 +159,113 @@ class ApiContractTests(unittest.TestCase):
         openapi = json.loads(openapi_path.read_text(encoding="utf-8"))
         self.assertEqual(baseline["endpoint_count"], stdout_contract["endpoint_count"])
         self.assertIn("/api/v1/runtime/status", openapi["paths"])
+
+    def test_p4_contract_snapshots_match_current_api(self) -> None:
+        from scripts.export_api_contract import assert_api_contract_snapshots_current
+
+        assert_api_contract_snapshots_current(ROOT / "docs" / "api-contract")
+
+    def test_export_api_contract_check_mode_verifies_committed_snapshots(self) -> None:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "export_api_contract.py"),
+                "--output-dir",
+                str(ROOT / "docs" / "api-contract"),
+                "--check",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=True,
+        )
+
+        self.assertIn("API contract snapshots are current", result.stdout)
+
+    def test_export_api_fixtures_writes_frontend_fixture_files(self) -> None:
+        output_dir = TMP_ROOT / "api_fixture_tests" / str(uuid4())
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "export_api_fixtures.py"),
+                "--output-dir",
+                str(output_dir),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=True,
+        )
+
+        manifest = json.loads(result.stdout)
+        self.assertIn("home/dashboard.summary.json", manifest["fixtures"])
+        self.assertIn("messages/conversations.list.json", manifest["fixtures"])
+        self.assertIn("customers/customers.list.json", manifest["fixtures"])
+        self.assertIn("knowledge/knowledge.search.json", manifest["fixtures"])
+        self.assertIn("settings/settings.get.json", manifest["fixtures"])
+
+        dashboard_fixture = json.loads((output_dir / "home" / "dashboard.summary.json").read_text(encoding="utf-8"))
+        self.assertTrue(dashboard_fixture["success"])
+        self.assertIn("trace_id", dashboard_fixture)
+        self.assertIn("runtime", dashboard_fixture["data"])
+
+    def test_p4_fixtures_snapshots_match_committed_files(self) -> None:
+        from scripts.export_api_fixtures import assert_api_fixtures_current
+
+        assert_api_fixtures_current(ROOT / "docs" / "api-contract" / "fixtures")
+
+    def test_export_api_fixtures_check_mode_verifies_committed_snapshots(self) -> None:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "export_api_fixtures.py"),
+                "--output-dir",
+                str(ROOT / "docs" / "api-contract" / "fixtures"),
+                "--check",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=True,
+        )
+
+        self.assertIn("API fixtures are current", result.stdout)
+
+    def test_export_event_contract_writes_reserved_event_snapshot(self) -> None:
+        output_dir = TMP_ROOT / "event_contract_tests" / str(uuid4())
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "export_event_contract.py"),
+                "--output-dir",
+                str(output_dir),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=True,
+        )
+
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["contract_version"], "p4-event-v1")
+        event_types = {item["type"] for item in payload["events"]}
+        self.assertEqual(
+            event_types,
+            {"runtime.status", "message.received", "message.sent", "knowledge.progress", "log.event", "error"},
+        )
+        snapshot = json.loads((output_dir / "event-contract.json").read_text(encoding="utf-8"))
+        self.assertEqual(snapshot["envelope"]["trace_id"]["type"], "string")
+
+    def test_p4_event_contract_snapshot_matches_committed_file(self) -> None:
+        from scripts.export_event_contract import assert_event_contract_snapshot_current
+
+        assert_event_contract_snapshot_current(ROOT / "docs" / "api-contract")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,214 @@
+{
+  "contract_version": "p4-event-v1",
+  "envelope": {
+    "data": {
+      "description": "事件负载。",
+      "required": true,
+      "type": "object"
+    },
+    "id": {
+      "description": "事件唯一 ID，用于前端去重和恢复。",
+      "required": true,
+      "type": "string"
+    },
+    "timestamp": {
+      "description": "ISO 8601 时间戳。",
+      "required": true,
+      "type": "string"
+    },
+    "trace_id": {
+      "description": "关联 API / runtime trace id。",
+      "required": true,
+      "type": "string"
+    },
+    "type": {
+      "description": "事件类型。",
+      "required": true,
+      "type": "string"
+    }
+  },
+  "events": [
+    {
+      "description": "守护进程状态变化、心跳、退避重试等运行时状态更新。",
+      "payload_schema": {
+        "last_heartbeat": {
+          "description": "最近心跳时间。",
+          "required": false,
+          "type": "string"
+        },
+        "mode": {
+          "description": "运行模式。",
+          "required": true,
+          "type": "string"
+        },
+        "running": {
+          "description": "当前是否在运行。",
+          "required": true,
+          "type": "boolean"
+        },
+        "state": {
+          "description": "running/stopped/backoff",
+          "required": true,
+          "type": "string"
+        }
+      },
+      "sample": {
+        "last_heartbeat": "2026-04-25T10:00:00+08:00",
+        "mode": "global",
+        "running": true,
+        "state": "running"
+      },
+      "type": "runtime.status"
+    },
+    {
+      "description": "监听到新的微信消息。",
+      "payload_schema": {
+        "conversation_id": {
+          "description": "会话标识。",
+          "required": true,
+          "type": "string"
+        },
+        "is_group": {
+          "description": "是否群聊。",
+          "required": true,
+          "type": "boolean"
+        },
+        "sender": {
+          "description": "发送者名称或群成员名。",
+          "required": true,
+          "type": "string"
+        },
+        "text": {
+          "description": "消息文本。",
+          "required": true,
+          "type": "string"
+        }
+      },
+      "sample": {
+        "conversation_id": "friend:zhang",
+        "is_group": false,
+        "sender": "张先生",
+        "text": "请问你们的产品支持试用吗？"
+      },
+      "type": "message.received"
+    },
+    {
+      "description": "自动回复发送结果事件。",
+      "payload_schema": {
+        "conversation_id": {
+          "description": "会话标识。",
+          "required": true,
+          "type": "string"
+        },
+        "reason_code": {
+          "description": "业务阻断或失败原因码。",
+          "required": false,
+          "type": "string"
+        },
+        "status": {
+          "description": "sent/unconfirmed/failed/blocked",
+          "required": true,
+          "type": "string"
+        },
+        "text": {
+          "description": "回复文本。",
+          "required": true,
+          "type": "string"
+        }
+      },
+      "sample": {
+        "conversation_id": "friend:zhang",
+        "reason_code": "",
+        "status": "sent",
+        "text": "支持 7 天试用，我可以先把申请方式发你。"
+      },
+      "type": "message.sent"
+    },
+    {
+      "description": "知识库导入、切分、建索引、联网扩库的阶段性进度。",
+      "payload_schema": {
+        "current": {
+          "description": "当前进度值。",
+          "required": true,
+          "type": "integer"
+        },
+        "message": {
+          "description": "阶段说明。",
+          "required": false,
+          "type": "string"
+        },
+        "stage": {
+          "description": "extract/chunk/embed/index/search",
+          "required": true,
+          "type": "string"
+        },
+        "total": {
+          "description": "总进度值。",
+          "required": true,
+          "type": "integer"
+        }
+      },
+      "sample": {
+        "current": 18,
+        "message": "知识库索引构建完成",
+        "stage": "index",
+        "total": 18
+      },
+      "type": "knowledge.progress"
+    },
+    {
+      "description": "面向前端日志面板的普通日志事件。",
+      "payload_schema": {
+        "event_type": {
+          "description": "运行时事件类型。",
+          "required": true,
+          "type": "string"
+        },
+        "level": {
+          "description": "info/warn/error",
+          "required": true,
+          "type": "string"
+        },
+        "message": {
+          "description": "可展示日志文案。",
+          "required": true,
+          "type": "string"
+        }
+      },
+      "sample": {
+        "event_type": "runtime.status",
+        "level": "info",
+        "message": "daemon running"
+      },
+      "type": "log.event"
+    },
+    {
+      "description": "前端需要单独感知的异常事件。",
+      "payload_schema": {
+        "code": {
+          "description": "错误码。",
+          "required": true,
+          "type": "string"
+        },
+        "detail": {
+          "description": "附加细节。",
+          "required": false,
+          "type": "object"
+        },
+        "message": {
+          "description": "错误说明。",
+          "required": true,
+          "type": "string"
+        }
+      },
+      "sample": {
+        "code": "WECHAT_WINDOW_NOT_FOUND",
+        "detail": {
+          "ui_ready": false
+        },
+        "message": "未发现可操作的微信窗口"
+      },
+      "type": "error"
+    }
+  ]
+}

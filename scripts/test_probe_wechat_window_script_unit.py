@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 from unittest import TestCase
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -48,6 +49,20 @@ class ProbeWechatWindowScriptTests(TestCase):
         self.assertIn("Window ready: True", text)
         self.assertIn("Window minimized: False", text)
         self.assertIn("Input ready: True", text)
+
+    def test_wechat_running_uses_bootstrap_process_fallback(self) -> None:
+        from scripts import probe_wechat_window as module
+
+        calls: list[str] = []
+
+        def fake_is_running(name: str) -> bool:
+            calls.append(name)
+            return name == "Weixin.exe"
+
+        with patch.object(module, "is_process_running", side_effect=fake_is_running):
+            self.assertTrue(module._wechat_is_running())
+
+        self.assertEqual(calls, ["WeChat.exe", "Weixin.exe"])
 
 
 if __name__ == "__main__":

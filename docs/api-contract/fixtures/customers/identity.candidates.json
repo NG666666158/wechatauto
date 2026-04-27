@@ -1,0 +1,10 @@
+{
+  "data": [
+    {
+      "candidate_id": "candidate_001"
+    }
+  ],
+  "error": null,
+  "success": true,
+  "trace_id": "fixture-customers-identity-candidates"
+}

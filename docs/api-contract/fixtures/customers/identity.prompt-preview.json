@@ -1,0 +1,28 @@
+{
+  "success": true,
+  "data": {
+    "resolved_user_id": "user_001",
+    "identity_status": "confirmed",
+    "identity_confidence": 1.0,
+    "latest_message": "你们支持试用吗？",
+    "scene": "friend",
+    "self_identity_profile": {
+      "display_name": "碱水",
+      "identity_facts": [
+        "我是产品顾问"
+      ],
+      "relationship": "customer",
+      "tags": []
+    },
+    "knowledge_results": [
+      {
+        "chunk_id": "chunk_001",
+        "text": "试用政策：支持 7 天体验，可先登记后开通。",
+        "score": 0.9
+      }
+    ],
+    "prompt_preview": "## Self Identity Summary\nName: 碱水\nRelationship: customer\nIdentity facts: 我是产品顾问\nConstraints: (none)\nStyle hints: (none)\nNotes: (none)\n\n## Recent Conversation Context\n(no recent context)\n\n## Retrieved Knowledge\n1. 试用政策：支持 7 天体验，可先登记后开通。\n\n## Current Reply Task\nScene: friend\nLatest message: 你们支持试用吗？\nWrite a direct Chinese WeChat reply with no extra explanation."
+  },
+  "error": null,
+  "trace_id": "fixture-trace"
+}

@@ -38,6 +38,7 @@ class SettingsSnapshot:
     knowledge_chunk_overlap: int = 200
     run_silently: bool = True
     esc_action: str = "pause"
+    force_stop_hotkey: str = "ctrl+shift+f12"
     schedule_enabled: bool = False
     schedule_blocks: list[ScheduleBlock] = field(default_factory=list)
     privacy: PrivacyPolicy = field(default_factory=PrivacyPolicy)

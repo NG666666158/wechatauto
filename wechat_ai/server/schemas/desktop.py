@@ -60,6 +60,7 @@ class SettingsData(BaseModel):
     knowledge_chunk_overlap: int = 200
     run_silently: bool = True
     esc_action: str = "pause"
+    force_stop_hotkey: str = "ctrl+shift+f12"
     schedule_enabled: bool = False
     schedule_blocks: list[ScheduleBlockData] = Field(default_factory=list)
     privacy: PrivacyPolicyData = Field(default_factory=PrivacyPolicyData)
@@ -148,6 +149,26 @@ class SelfIdentityData(BaseModel):
     identity_facts: list[str] = Field(default_factory=list)
 
 
+class PromptAcceptanceSelfIdentityData(BaseModel):
+    display_name: str = ""
+    identity_facts: list[str] = Field(default_factory=list)
+    relationship: str = ""
+    tags: list[str] = Field(default_factory=list)
+
+
+class PromptAcceptancePreviewData(BaseModel):
+    resolved_user_id: str = ""
+    identity_status: str = ""
+    identity_confidence: float | None = None
+    latest_message: str = ""
+    scene: str = "friend"
+    self_identity_profile: PromptAcceptanceSelfIdentityData = Field(
+        default_factory=PromptAcceptanceSelfIdentityData
+    )
+    knowledge_results: list["KnowledgeSearchResultData"] = Field(default_factory=list)
+    prompt_preview: str = ""
+
+
 class KnowledgeSearchResultData(BaseModel):
     chunk_id: str = ""
     text: str = ""
@@ -168,6 +189,15 @@ class WebKnowledgeBuildResultData(BaseModel):
     documents: list[str] = Field(default_factory=list)
     search_limit: int = 5
     status: str = ""
+
+
+class KnowledgeAcceptanceSnapshotData(BaseModel):
+    imported_files: list[str] = Field(default_factory=list)
+    search_query: str = ""
+    retrieved_chunk_ids: list[str] = Field(default_factory=list)
+    retrieved_chunks: list[KnowledgeSearchResultData] = Field(default_factory=list)
+    knowledge_status: KnowledgeStatusData = Field(default_factory=KnowledgeStatusData)
+    web_build_status: str = ""
 
 
 class RetentionApplyResultData(BaseModel):

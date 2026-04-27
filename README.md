@@ -1,57 +1,69 @@
 # pywechat
 
-这是一个基于 Windows 微信桌面端自动化能力构建的 AI 自动回复项目。
+这是一个面向 Windows 微信桌面端的 AI 自动回复项目。当前仓库的重点已经不只是“能回消息”，而是逐步收口成一套可长期使用的本地运营控制台：
 
-当前仓库可以理解为两层结构：
+- 运行时负责真实微信消息读取、识别、生成回复与发送确认。
+- 桌面客户端负责身份编辑、知识库管理、设置、观测、日志与调度控制。
 
-1. `pywechat/`、`pyweixin/`
-负责微信窗口识别、消息读取、消息发送等桌面自动化能力。
-2. `wechat_ai/`
-负责消息编排、用户身份识别、自我身份管理、画像与记忆、知识库检索、日志与守护运行。
+## 项目定位
 
-当前项目的实际状态是：
+当前最准确的描述是：
 
-- 后端主链路已经成型，可做真实微信自动回复联调。
-- 桌面客户端后端接口已经铺好，但前端与桌面壳层仍在组装阶段。
-- 文档体系已经按“主文档 / 架构说明 / 计划清单 / 历史归档”重新整理。
+`一个后端主链路已基本成型、正在向桌面客户端产品化收口的 WeChat AI Runtime。`
+
+需要特别说明的是：
+
+- 微信真实自动化在运行时仍会抢占鼠标和键盘输入。
+- 桌面客户端的职责不是替代底层自动化，而是做配置、运营、观测和验收面板。
+
+### 桌面客户端职责
+
+- 编辑用户画像、候选身份、自我身份
+- 查看 prompt evidence / retrieval evidence
+- 管理本地知识库与联网扩库
+- 查看运行状态、日志、异常与统计
+- 管理工作时段、托盘、静默后台、开机自启、定时巡检
+
+### 运行时职责
+
+- 真实读取微信窗口消息
+- 做身份识别、上下文整理、知识检索
+- 调用模型生成回复
+- 执行真实发送与发送后确认
+- 输出结构化日志、心跳、错误与观测事件
+
+## 当前已具备的能力
+
+- 微信单聊自动回复
+- 群聊 `@` 场景自动回复
+- unread 会话轮询与 active 当前窗口增量监听
+- 多条未读消息聚合回复
+- 用户身份识别、候选合并、自我身份分层覆盖
+- 本地 memory store
+- 本地知识库导入、切分、索引、检索
+- `txt / md / json / pdf / docx / 图片 OCR` 入库
+- 联网扩库第一版
+- 结构化日志、脱敏、保留策略
+- 守护模式、心跳、异常退避、长期轮询
+- FastAPI 本地桌面后端接口
+- Electron 壳第一版与设置页桌面偏好接入
 
 ## 文档入口
 
-建议按下面顺序阅读：
+建议按这个顺序看：
 
-1. [README.md](/C:/github/pywechat/pywechat-main/pywechat-main/README.md)
-2. [docs/architecture-overview.md](/C:/github/pywechat/pywechat-main/pywechat-main/docs/architecture-overview.md)
-3. [docs/desktop-app-backend.md](/C:/github/pywechat/pywechat-main/pywechat-main/docs/desktop-app-backend.md)
-4. [PROJECT_PLAN.md](/C:/github/pywechat/pywechat-main/pywechat-main/PROJECT_PLAN.md)
+1. [README.md](./README.md)
+2. [docs/architecture-overview.md](./docs/architecture-overview.md)
+3. [docs/desktop-app-backend.md](./docs/desktop-app-backend.md)
+4. [PROJECT_PLAN.md](./PROJECT_PLAN.md)
+5. [REFACTOR_PLAN.md](./REFACTOR_PLAN.md)
 
-历史阶段性设计和拆解过程统一归档到：
+P8 验收相关文档：
 
-- [docs/superpowers/README.md](/C:/github/pywechat/pywechat-main/pywechat-main/docs/superpowers/README.md)
-
-## 当前已经具备的能力
-
-- 微信单聊自动回复
-- 微信群聊 `@` 场景自动回复
-- 全局轮询未读会话并聚合消息
-- 多条未读消息合并回复
-- 用户身份识别与候选合并
-- 分层自我身份
-  - 全局身份
-  - 关系身份
-  - 用户级覆盖身份
-- 用户画像与助手画像读写
-- 本地 memory store
-- 本地 RAG 检索
-- 文档导入与索引重建
-  - `txt`
-  - `md`
-  - `json`
-  - `pdf`
-  - `docx`
-  - 图片 OCR
-- 结构化运行日志
-- 守护模式、心跳、退避重试、首次启动引导
-- 桌面客户端后端服务层基础接口
+- [docs/p8-acceptance-checklist.md](./docs/p8-acceptance-checklist.md)
+- [docs/p8-runbook.md](./docs/p8-runbook.md)
+- [docs/p8-long-run-report-template.md](./docs/p8-long-run-report-template.md)
+- [docs/p8-release-checklist.md](./docs/p8-release-checklist.md)
 
 ## 仓库结构
 
@@ -60,15 +72,13 @@
 - `pyweixin/`
   当前微信桌面 UI 自动化主依赖
 - `wechat_ai/`
-  AI 运行时与桌面后端接口
-- `scripts/`
-  启动、调试、导入、测试脚本
+  AI 运行时、身份、知识库、观测、桌面后端 API
 - `desktop_app/`
-  桌面客户端前端与后续桌面应用集成目录
+  前端页面、Electron 壳、桌面集成层
+- `scripts/`
+  启动、调试、导入、验收、测试脚本
 - `docs/`
-  主文档
-- `docs/superpowers/`
-  历史设计、计划、实现过程归档
+  主文档、架构说明、验收说明
 
 ## 快速开始
 
@@ -92,7 +102,7 @@ py -3 -m pip install -r requirements.txt
 
 ### 3. 首次启动真实微信自动回复
 
-首次启动推荐走引导脚本：
+推荐先走引导脚本：
 
 ```powershell
 py -3 scripts\bootstrap_wechat_first_run.py --wechat-path C:\Weixin\Weixin.exe --ready-timeout 420 --poll-interval 2 --narrator-settle-seconds 10
@@ -105,37 +115,33 @@ py -3 scripts\bootstrap_wechat_first_run.py --wechat-path C:\Weixin\Weixin.exe -
 - 等待 UI 自动化环境接管
 - 切入正式监听脚本
 
-### 4. 直接启动正式监听
+### 4. 直接启动正式守护
 
 ```powershell
 py -3 scripts\run_minimax_global_auto_reply.py --forever --poll-interval 1.0 --debug
 ```
 
-### 5. 其他常用运行方式
+## 桌面客户端与验收
 
-单好友自动回复：
+设置页里的桌面壳偏好当前已经接通：
 
-```powershell
-py -3 scripts\run_minimax_friend_auto_reply.py --friend "Alice" --duration 5min --debug
-```
+- `开机自启`
+- `定时巡检间隔`
 
-群聊 `@` 自动回复：
-
-```powershell
-py -3 scripts\run_minimax_group_at_reply.py --group "Project Group" --duration 5min --debug
-```
-
-## 知识库与身份数据
-
-常用脚本：
+P8 验收入口：
 
 ```powershell
-py -3 scripts\ingest_knowledge.py
-py -3 scripts\rebuild_index.py
-py -3 scripts\show_recent_logs.py --limit 20
-py -3 scripts\show_memory_summary.py --chat-id friend_demo
-py -3 scripts\show_desktop_app_snapshot.py
+py -3 scripts\run_p8_shell_acceptance.py --skip-http --format pretty
+py -3 scripts\run_p8_acceptance.py --preset smoke --format pretty
 ```
+
+如果前端服务已经启动，也可以做设置页实时检查：
+
+```powershell
+py -3 scripts\run_p8_shell_acceptance.py --frontend-url http://127.0.0.1:3000/settings --format pretty
+```
+
+## 数据目录
 
 运行时默认数据目录位于：
 
@@ -147,29 +153,32 @@ py -3 scripts\show_desktop_app_snapshot.py
 - `wechat_ai/data/logs/`
 - `wechat_ai/data/app/`
 
-## 测试
+## 测试与回归
 
-项目当前以脚本化回归测试为主。
-
-核心后端回归常用命令：
+核心后端回归：
 
 ```powershell
 py -3 scripts\test_wechat_ai_unit.py
-py -3 scripts\test_wechat_ai_reply_pipeline_unit.py
-py -3 scripts\test_wechat_ai_identity_integration_unit.py
-py -3 scripts\test_wechat_ai_self_identity_integration_unit.py
-py -3 scripts\test_wechat_ai_knowledge_importer_unit.py
-py -3 scripts\test_pyweixin_smoke.py
-py -3 scripts\test_pull_messages_regression.py
+py -3 scripts\test_wechat_ai_app_service_unit.py
+py -3 scripts\test_wechat_ai_server_unit.py
+py -3 scripts\test_wechat_ai_api_contract_unit.py
 ```
 
-## 当前项目判断
+前端与桌面壳回归：
 
-现在最准确的描述不是“简单脚本”，也还不是“完全成熟的桌面产品”，而是：
+```powershell
+node desktop_app\frontend\tests\p5-frontend-acceptance.mjs
+node desktop_app\electron\tests\p7-shell-unit.mjs
+node desktop_app\electron\tests\p7-shell-preferences-bridge-unit.mjs
+py -3 scripts\test_p8_shell_acceptance_unit.py
+```
 
-`一个后端主链路已基本成型、正在向桌面客户端产品化收口的 WeChat AI Runtime。`
+## 发布前关注点
 
-如果你要继续推进客户端开发，请优先看：
+如果要进入可长期使用阶段，当前最重要的是：
 
-- [docs/desktop-app-backend.md](/C:/github/pywechat/pywechat-main/pywechat-main/docs/desktop-app-backend.md)
-- [PROJECT_PLAN.md](/C:/github/pywechat/pywechat-main/pywechat-main/PROJECT_PLAN.md)
+- 身份提示词链路验收
+- 知识库检索链路验收
+- Electron 设置页与桌面偏好验收
+- 30 分钟 / 2 小时 / 8 小时长跑稳定性
+- 发送确认失败、anchor missed、loop error 的持续收口

@@ -1,0 +1,12 @@
+{
+  "name": "wechat-ai-electron-shell",
+  "private": true,
+  "main": "main.cjs",
+  "scripts": {
+    "dev": "electron .",
+    "smoke:p7": "node tests/p7-shell-unit.mjs"
+  },
+  "devDependencies": {
+    "electron": "^35.5.1"
+  }
+}

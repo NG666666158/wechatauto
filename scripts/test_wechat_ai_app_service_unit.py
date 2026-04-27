@@ -5,7 +5,9 @@ import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import TestCase
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -60,6 +62,8 @@ class FakeDaemonRunner:
         poll_interval: float = 1.0,
         heartbeat_interval: float = 60.0,
         error_backoff_seconds: float = 5.0,
+        force_stop_hotkey: str = "ctrl+shift+f12",
+        force_stop_file: str | Path | None = None,
         stop_event: object | None = None,
     ) -> int:
         pid = self.next_pid
@@ -72,6 +76,8 @@ class FakeDaemonRunner:
                 "poll_interval": poll_interval,
                 "heartbeat_interval": heartbeat_interval,
                 "error_backoff_seconds": error_backoff_seconds,
+                "force_stop_hotkey": force_stop_hotkey,
+                "force_stop_file": force_stop_file,
                 "stop_event": stop_event,
             }
         )
@@ -174,6 +180,7 @@ class DesktopSettingsStoreTests(TestCase):
             self.assertEqual(snapshot.work_hours.start, "09:00")
             self.assertTrue(snapshot.run_silently)
             self.assertEqual(snapshot.esc_action, "pause")
+            self.assertEqual(snapshot.force_stop_hotkey, "ctrl+shift+f12")
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -294,6 +301,18 @@ class DesktopAppServiceTests(TestCase):
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+    def test_force_stop_hotkey_settings_round_trip(self) -> None:
+        from wechat_ai.app.service import DesktopAppService
+
+        temp_dir = _fresh_dir(".tmp_app_service_force_stop_hotkey_roundtrip")
+        try:
+            service = DesktopAppService(data_root=temp_dir)
+            updated = service.update_settings({"force_stop_hotkey": "ctrl+alt+f10"})
+            self.assertEqual(updated.force_stop_hotkey, "ctrl+alt+f10")
+            self.assertEqual(service.get_settings().force_stop_hotkey, "ctrl+alt+f10")
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def test_conversation_store_and_suggestion_pipeline_are_available(self) -> None:
         from wechat_ai.app.service import DesktopAppService
 
@@ -326,6 +345,29 @@ class DesktopAppServiceTests(TestCase):
             self.assertEqual(suggestion.suggestion, "建议:请问支持试用吗？")
             self.assertEqual(getattr(pipeline.messages[0], "conversation_id"), "friend:alice")
             self.assertEqual(getattr(pipeline.messages[0], "chat_type"), "friend")
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_local_conversation_creates_draft_customer_profile_entry(self) -> None:
+        from wechat_ai.app.service import DesktopAppService
+
+        temp_dir = _fresh_dir(".tmp_app_service_conversation_customer")
+        try:
+            service = DesktopAppService(data_root=temp_dir)
+            service.record_conversation_message("friend:alice", sender="Alice", text="hello", direction="incoming")
+            service.record_conversation_message("friend:alice", sender="assistant", text="hi", direction="outgoing")
+
+            customers = service.list_customers()
+            customer = service.get_customer("friend:alice")
+            detail = service.get_conversation("friend:alice")
+
+            draft = next(item for item in customers if item.customer_id == "friend:alice")
+            self.assertEqual(draft.display_name, "Alice")
+            self.assertEqual(draft.status, "draft")
+            self.assertTrue(draft.tags)
+            self.assertEqual(customer["customer_id"], "friend:alice")
+            self.assertEqual(customer["display_name"], "Alice")
+            self.assertEqual([message["direction"] for message in detail["messages"]], ["incoming", "outgoing"])
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -488,6 +530,31 @@ class DesktopAppServiceTests(TestCase):
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+    def test_prompt_acceptance_preview_includes_identity_and_knowledge(self) -> None:
+        from wechat_ai.app.service import DesktopAppService
+
+        temp_dir = _fresh_dir(".tmp_app_service_prompt_acceptance")
+        try:
+            source = temp_dir / "trial.txt"
+            source.write_text("试用政策：支持 7 天体验，可先登记后开通。", encoding="utf-8")
+            service = DesktopAppService(data_root=temp_dir)
+            service.import_knowledge_files([source])
+            service.update_global_self_identity({"display_name": "碱水", "identity_facts": ["我是产品顾问"]})
+
+            preview = service.build_prompt_acceptance_preview(
+                user_id="user_001",
+                latest_message="你们支持试用吗？",
+                relationship_to_me="customer",
+            )
+
+            self.assertEqual(preview["resolved_user_id"], "user_001")
+            self.assertEqual(preview["self_identity_profile"]["display_name"], "碱水")
+            self.assertIn("我是产品顾问", preview["self_identity_profile"]["identity_facts"])
+            self.assertTrue(preview["knowledge_results"])
+            self.assertIn("我是产品顾问", preview["prompt_preview"])
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def test_knowledge_status_shape_is_available(self) -> None:
         from wechat_ai.app.service import DesktopAppService
 
@@ -510,10 +577,117 @@ class DesktopAppServiceTests(TestCase):
             started = service.start_daemon()
             self.assertEqual(started["state"], "running")
             self.assertEqual(started["pid"], 4321)
+            self.assertEqual(runner.launched[0]["force_stop_hotkey"], "ctrl+shift+f12")
+            self.assertTrue(Path(runner.launched[0]["force_stop_file"]).name.startswith("force_stop_"))
             self.assertEqual(service.pause_daemon()["state"], "paused")
             self.assertEqual(runner.stopped, [4321])
             self.assertEqual(service.stop_daemon()["state"], "stopped")
             self.assertEqual(service.get_app_status().daemon_state, "stopped")
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_start_daemon_uses_configured_force_stop_hotkey(self) -> None:
+        from wechat_ai.app.service import DesktopAppService
+
+        temp_dir = _fresh_dir(".tmp_app_service_force_stop_hotkey")
+        try:
+            runner = FakeDaemonRunner()
+            service = DesktopAppService(data_root=temp_dir, daemon_runner=runner)
+            service.update_settings({"force_stop_hotkey": "ctrl+alt+f10"})
+
+            service.start_daemon()
+
+            self.assertEqual(runner.launched[0]["force_stop_hotkey"], "ctrl+alt+f10")
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_subprocess_daemon_runner_launches_out_of_process_emergency_watchdog(self) -> None:
+        from wechat_ai.app import service as service_module
+
+        class FakeProcess:
+            def __init__(self, pid: int) -> None:
+                self.pid = pid
+
+            def poll(self) -> None:
+                return None
+
+            def terminate(self) -> None:
+                return None
+
+            def wait(self, timeout: float | None = None) -> int:
+                return 0
+
+            def kill(self) -> None:
+                return None
+
+        temp_dir = _fresh_dir(".tmp_app_service_watchdog")
+        calls: list[list[str]] = []
+        kwargs_calls: list[dict[str, object]] = []
+        pids = iter([5101, 5102])
+
+        def fake_popen(command, **kwargs):
+            kwargs_calls.append(dict(kwargs))
+            calls.append([str(part) for part in command])
+            return FakeProcess(next(pids))
+
+        try:
+            runner = service_module._SubprocessDaemonRunner(project_root=temp_dir)
+            with patch.object(service_module.subprocess, "Popen", side_effect=fake_popen):
+                pid = runner.launch(force_stop_hotkey="ctrl+shift+f12", force_stop_file=temp_dir / "stop.flag")
+
+            self.assertEqual(pid, 5101)
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(calls[0][0], "powershell.exe")
+            self.assertIn("-Command", calls[0])
+            self.assertTrue(any("py -3" in part and "run_minimax_global_auto_reply.py" in part for part in calls[0]))
+            self.assertIn("emergency_stop_watchdog.py", calls[1][1])
+            self.assertIn("--target-pid", calls[1])
+            self.assertIn("5101", calls[1])
+            self.assertIn("--hotkey", calls[1])
+            self.assertIn("ctrl+shift+f12", calls[1])
+            self.assertTrue(any("--debug" in part for part in calls[0]))
+            self.assertNotEqual(
+                int(kwargs_calls[0].get("creationflags", 0)) & getattr(service_module.subprocess, "CREATE_NO_WINDOW", 0),
+                getattr(service_module.subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_start_daemon_uses_visible_pyweixin_runtime_for_window_access(self) -> None:
+        from wechat_ai.app.service import DesktopAppService
+
+        temp_dir = _fresh_dir(".tmp_app_service_visible_runtime")
+        try:
+            runner = FakeDaemonRunner()
+            service = DesktopAppService(data_root=temp_dir, daemon_runner=runner)
+
+            service.start_daemon()
+
+            self.assertEqual(runner.launched[0]["run_silently"], False)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_subprocess_daemon_runner_pid_check_falls_back_when_tasklist_is_denied(self) -> None:
+        from wechat_ai.app import service as service_module
+
+        temp_dir = _fresh_dir(".tmp_app_service_pid_fallback")
+        calls: list[list[str]] = []
+
+        def fake_run(command, **kwargs):
+            del kwargs
+            calls.append([str(part) for part in command])
+            if command[0] == "tasklist":
+                return SimpleNamespace(returncode=1, stdout="", stderr="ERROR: Access denied")
+            return SimpleNamespace(returncode=0, stdout="RUNNING\r\n", stderr="")
+
+        try:
+            runner = service_module._SubprocessDaemonRunner(project_root=temp_dir)
+            with patch.object(service_module.subprocess, "run", side_effect=fake_run):
+                self.assertTrue(runner.is_running(9876))
+
+            self.assertEqual(calls[0][0], "tasklist")
+            self.assertEqual(calls[1][0], "powershell")
+            self.assertIn("Get-Process -Id 9876", " ".join(calls[1]))
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -535,6 +709,47 @@ class DesktopAppServiceTests(TestCase):
             self.assertTrue(stop_event.is_set())
             self.assertEqual(stopped["state"], "stopped")
             self.assertEqual(runner.stopped, [4321])
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_start_daemon_uses_unique_stop_flag_so_stale_flags_do_not_block_restart(self) -> None:
+        from wechat_ai.app.service import DesktopAppService
+
+        temp_dir = _fresh_dir(".tmp_app_service_unique_stop_flag")
+        try:
+            runner = FakeDaemonRunner()
+            service = DesktopAppService(data_root=temp_dir, daemon_runner=runner)
+            (temp_dir / "app").mkdir(parents=True, exist_ok=True)
+            (temp_dir / "app" / "force_stop.flag").write_text("stop\n", encoding="utf-8")
+
+            service.start_daemon()
+            service.force_stop_daemon()
+            service.start_daemon()
+
+            first_flag = Path(runner.launched[0]["force_stop_file"])
+            second_flag = Path(runner.launched[1]["force_stop_file"])
+            self.assertNotEqual(first_flag, second_flag)
+            self.assertTrue(first_flag.name.startswith("force_stop_"))
+            self.assertTrue(second_flag.name.startswith("force_stop_"))
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_force_stop_writes_default_stop_flag_for_orphan_runtime(self) -> None:
+        from wechat_ai.app.service import DesktopAppService
+
+        temp_dir = _fresh_dir(".tmp_app_service_force_stop_default_flag")
+        try:
+            runner = FakeDaemonRunner()
+            service = DesktopAppService(data_root=temp_dir, daemon_runner=runner)
+
+            result = service.force_stop_daemon()
+
+            self.assertEqual(result["state"], "stopped")
+            self.assertEqual(runner.stopped, [])
+            self.assertEqual((temp_dir / "app" / "force_stop.flag").read_text(encoding="utf-8"), "stop\n")
+            service.start_daemon()
+            flag_path = temp_dir / "app" / "force_stop.flag"
+            self.assertTrue(not flag_path.exists() or not flag_path.read_text(encoding="utf-8").strip())
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -585,6 +800,24 @@ class DesktopAppServiceTests(TestCase):
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+    def test_knowledge_acceptance_snapshot_is_available(self) -> None:
+        from wechat_ai.app.service import DesktopAppService
+
+        temp_dir = _fresh_dir(".tmp_app_service_knowledge_acceptance")
+        try:
+            source = temp_dir / "policy.txt"
+            source.write_text("试用政策：支持 7 天试用，提交信息后开通。", encoding="utf-8")
+            service = DesktopAppService(data_root=temp_dir)
+            import_result = service.import_knowledge_files([source])
+            snapshot = service.build_knowledge_acceptance_snapshot("试用政策", imported_files=[source.name])
+
+            self.assertEqual(snapshot["imported_files"], [source.name])
+            self.assertEqual(snapshot["search_query"], "试用政策")
+            self.assertTrue(snapshot["retrieved_chunk_ids"])
+            self.assertEqual(import_result["files"][0]["status"], "imported")
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def test_recent_logs_privacy_policy_and_environment_are_available(self) -> None:
         from wechat_ai.app.service import DesktopAppService
 
@@ -632,6 +865,38 @@ class DesktopAppServiceTests(TestCase):
             self.assertEqual(environment["ui_probe"]["current_chat"], "张先生")
             self.assertEqual(environment["ui_probe"]["visible_message_count"], 3)
             self.assertEqual(probe.calls, 1)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_environment_status_accepts_pyweixin_functional_ready_fallback(self) -> None:
+        from wechat_ai.app.service import DesktopAppService
+
+        temp_dir = _fresh_dir(".tmp_app_service_pyweixin_ready")
+        try:
+            probe = FakeWindowProbe(
+                {
+                    "ready": False,
+                    "status": "error",
+                    "reason": "NotFoundError",
+                    "current_chat": "",
+                    "visible_message_count": 0,
+                }
+            )
+            fake_pyweixin = SimpleNamespace(
+                Contacts=SimpleNamespace(check_my_info=lambda close_weixin=False: {"昵称": "tester"}),
+                Messages=SimpleNamespace(
+                    dump_recent_sessions=lambda recent="Today", chat_only=False, close_weixin=False: [],
+                    check_new_messages=lambda close_weixin=False: {},
+                ),
+            )
+            service = DesktopAppService(data_root=temp_dir, wechat_window_probe=probe)
+
+            with patch.dict(sys.modules, {"pyweixin": fake_pyweixin}):
+                environment = service.get_wechat_environment_status()
+
+            self.assertEqual(environment["ui_ready"], True)
+            self.assertEqual(environment["ui_probe"]["pyweixin_functional_ready"], True)
+            self.assertIn("new_messages", environment["ui_probe"]["functional_checks"])
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -709,7 +974,14 @@ class DesktopAppServiceTests(TestCase):
 
         temp_dir = _fresh_dir(".tmp_app_service_schedule")
         try:
-            service = DesktopAppService(data_root=temp_dir)
+            runner = FakeDaemonRunner()
+            service = DesktopAppService(data_root=temp_dir, daemon_runner=runner)
+            bootstrap_calls: list[dict[str, object]] = []
+            service.bootstrap_wechat_for_web_start = lambda **kwargs: bootstrap_calls.append(kwargs) or {
+                "ok": True,
+                "message": "ready",
+                "status_lines": ["ready"],
+            }
             service.update_settings(
                 {
                     "schedule_enabled": True,
@@ -720,8 +992,40 @@ class DesktopAppServiceTests(TestCase):
             )
             started = service.apply_schedule_tick(now=datetime(2026, 4, 20, 10, 0, 0))
             self.assertEqual(started["action"], "start")
+            self.assertEqual(len(bootstrap_calls), 1)
+            self.assertEqual(runner.launched[0]["pid"], 4321)
             paused = service.apply_schedule_tick(now=datetime(2026, 4, 20, 20, 0, 0))
             self.assertEqual(paused["action"], "pause")
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_schedule_tick_blocks_start_when_bootstrap_fails(self) -> None:
+        from wechat_ai.app.service import DesktopAppService
+
+        temp_dir = _fresh_dir(".tmp_app_service_schedule_bootstrap_blocked")
+        try:
+            runner = FakeDaemonRunner()
+            service = DesktopAppService(data_root=temp_dir, daemon_runner=runner)
+            service.bootstrap_wechat_for_web_start = lambda **kwargs: {
+                "ok": False,
+                "message": "微信主界面未就绪",
+                "status_lines": ["等待微信主界面可识别"],
+            }
+            service.update_settings(
+                {
+                    "schedule_enabled": True,
+                    "schedule_blocks": [
+                        {"day_of_week": "mon", "start": "09:00", "end": "18:00", "label": "工作时段"}
+                    ],
+                }
+            )
+
+            result = service.apply_schedule_tick(now=datetime(2026, 4, 20, 10, 0, 0))
+
+            self.assertEqual(result["action"], "start_blocked")
+            self.assertEqual(result["daemon"]["state"], "stopped")
+            self.assertEqual(runner.launched, [])
+            self.assertEqual(result["bootstrap"]["message"], "微信主界面未就绪")
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 

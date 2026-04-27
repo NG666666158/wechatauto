@@ -1,0 +1,17 @@
+{
+  "data": [
+    {
+      "chunk_id": "chunk_001",
+      "score": 0.93,
+      "text": "产品支持 7 天试用，需要提交公司名称和联系人。"
+    },
+    {
+      "chunk_id": "chunk_002",
+      "score": 0.87,
+      "text": "价格方案支持基础版和专业版两档。"
+    }
+  ],
+  "error": null,
+  "success": true,
+  "trace_id": "fixture-knowledge-search"
+}

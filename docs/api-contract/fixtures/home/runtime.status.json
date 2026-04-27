@@ -1,0 +1,34 @@
+{
+  "data": {
+    "app": {
+      "auto_reply_enabled": true,
+      "daemon_state": "running",
+      "knowledge_index_ready": true,
+      "last_heartbeat": "2026-04-25T09:45:32+08:00",
+      "pending_count": 12,
+      "today_received": 128,
+      "today_replied": 256,
+      "wechat_status": "connected"
+    },
+    "daemon": {
+      "consecutive_errors": 0,
+      "last_error": null,
+      "last_heartbeat": "2026-04-25T09:45:32+08:00",
+      "last_started_at": "2026-04-25T08:58:00+08:00",
+      "last_stopped_at": null,
+      "next_retry_at": null,
+      "pid": 4321,
+      "retry_backoff_seconds": 0.0,
+      "run_silently": true,
+      "state": "running",
+      "today_received": 128,
+      "today_replied": 256
+    },
+    "mode": "global",
+    "running": true,
+    "state": "running"
+  },
+  "error": null,
+  "success": true,
+  "trace_id": "fixture-home-runtime"
+}

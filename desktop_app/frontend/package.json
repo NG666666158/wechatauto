@@ -3,8 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
+    "dev": "next dev --webpack",
+    "build": "powershell -ExecutionPolicy Bypass -File scripts/build-next.ps1",
+    "verify:p5": "node tests/p5-frontend-acceptance.mjs",
+    "verify:p6": "node tests/p6-events-acceptance.mjs",
     "start": "next start",
     "lint": "eslint ."
   },

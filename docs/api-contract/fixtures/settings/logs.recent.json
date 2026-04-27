@@ -1,0 +1,20 @@
+{
+  "data": [
+    {
+      "event_type": "runtime.status",
+      "message": "daemon running",
+      "timestamp": "2026-04-25T09:40:00+08:00",
+      "trace_id": "trace-runtime-ok"
+    },
+    {
+      "conversation_id": "friend:zhang",
+      "event_type": "message.sent",
+      "message": "reply sent",
+      "timestamp": "2026-04-25T09:41:10+08:00",
+      "trace_id": "trace-send-001"
+    }
+  ],
+  "error": null,
+  "success": true,
+  "trace_id": "fixture-settings-logs-recent"
+}

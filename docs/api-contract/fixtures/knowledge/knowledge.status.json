@@ -1,0 +1,21 @@
+{
+  "data": {
+    "chunks_created": 426,
+    "documents_loaded": 18,
+    "embedding_provider": "local",
+    "index_path": "data/knowledge/index.faiss",
+    "last_built_at": "2026-04-24T22:15:00+08:00",
+    "ready": true,
+    "supported_extensions": [
+      ".pdf",
+      ".docx",
+      ".txt",
+      ".md",
+      ".png",
+      ".jpg"
+    ]
+  },
+  "error": null,
+  "success": true,
+  "trace_id": "fixture-knowledge-status"
+}

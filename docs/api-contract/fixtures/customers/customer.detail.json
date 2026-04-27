@@ -1,0 +1,16 @@
+{
+  "data": {
+    "customer_id": "user_001",
+    "display_name": "张先生",
+    "last_contact_at": "2026-04-25T09:41:00+08:00",
+    "remark": "关注产品功能与试用政策，预计本周安排演示。",
+    "status": "intent",
+    "tags": [
+      "意向客户",
+      "线上咨询"
+    ]
+  },
+  "error": null,
+  "success": true,
+  "trace_id": "fixture-customers-detail"
+}

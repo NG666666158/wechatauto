@@ -1,0 +1,11 @@
+{
+  "data": {
+    "log_retention_days": 14,
+    "max_recent_log_events": 100,
+    "memory_retention_days": 90,
+    "redact_sensitive_logs": true
+  },
+  "error": null,
+  "success": true,
+  "trace_id": "fixture-settings-privacy"
+}

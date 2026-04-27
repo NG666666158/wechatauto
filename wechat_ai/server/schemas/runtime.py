@@ -11,6 +11,16 @@ class RuntimeStartRequest(BaseModel):
     mode: str = Field(default="global")
 
 
+class RuntimeBootstrapStartRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: str = Field(default="global")
+    ready_timeout_seconds: float = Field(default=20.0, ge=1.0, le=300.0)
+    poll_interval_seconds: float = Field(default=1.0, ge=0.2, le=10.0)
+    narrator_settle_seconds: float = Field(default=10.0, ge=0.0, le=60.0)
+    wait_for_ui_ready_before_guardian: bool = Field(default=True)
+
+
 class DaemonStatusData(BaseModel):
     state: str = "stopped"
     pid: int | None = None
@@ -45,8 +55,24 @@ class RuntimeStatusData(BaseModel):
     app: AppStatusData | dict[str, Any] = Field(default_factory=AppStatusData)
 
 
+class RuntimeBootstrapData(BaseModel):
+    ok: bool = False
+    wechat_started: bool = False
+    narrator_started: bool = False
+    ui_ready: bool = False
+    guardian_started: bool = False
+    narrator_stopped: bool = False
+    attempts: int = 0
+    message: str = ""
+    guardian_command: list[str] = Field(default_factory=list)
+    guardian_exit_code: int | None = None
+    status_lines: list[str] = Field(default_factory=list)
+    environment: dict[str, Any] = Field(default_factory=dict)
+
+
 class RuntimeActionData(BaseModel):
     state: str = "stopped"
     mode: str = "global"
     running: bool = False
     daemon: DaemonStatusData = Field(default_factory=DaemonStatusData)
+    bootstrap: RuntimeBootstrapData | None = None

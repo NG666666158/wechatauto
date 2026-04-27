@@ -1,0 +1,36 @@
+{
+  "data": {
+    "auto_reply_enabled": true,
+    "blacklist": [],
+    "esc_action": "pause",
+    "force_stop_hotkey": "ctrl+shift+f12",
+    "human_takeover_sessions": [],
+    "knowledge_chunk_overlap": 200,
+    "knowledge_chunk_size": 1000,
+    "new_customer_auto_create": true,
+    "paused_sessions": [],
+    "privacy": {
+      "log_retention_days": 14,
+      "max_recent_log_events": 100,
+      "memory_retention_days": 90,
+      "redact_sensitive_logs": true
+    },
+    "real_send_enabled": false,
+    "reply_style": "专业友好",
+    "request_timeout_seconds": 30.0,
+    "retry_attempts": 2,
+    "run_silently": true,
+    "schedule_blocks": [],
+    "schedule_enabled": false,
+    "sensitive_message_review": true,
+    "whitelist": [],
+    "work_hours": {
+      "enabled": true,
+      "end": "18:00",
+      "start": "09:00"
+    }
+  },
+  "error": null,
+  "success": true,
+  "trace_id": "fixture-settings-get"
+}

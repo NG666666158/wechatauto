@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request
 
+from wechat_ai.server.api._events import publish_event
 from wechat_ai.server.api._service import desktop_service
 from wechat_ai.server.core import success_response
 from wechat_ai.server.schemas import ApiResponse, ConversationControlData
@@ -24,7 +25,17 @@ def update_conversation_control(
     patch: ConversationControlPatchRequest,
     request: Request,
 ) -> dict[str, object]:
+    data = desktop_service(request).update_conversation_control(conversation_id, patch.model_dump(exclude_none=True))
+    publish_event(
+        request,
+        "log.event",
+        {
+            "event_type": "conversation.control.updated",
+            "conversation_id": conversation_id,
+            "control": data,
+        },
+    )
     return success_response(
-        desktop_service(request).update_conversation_control(conversation_id, patch.model_dump(exclude_none=True)),
+        data,
         trace_id=request.state.trace_id,
     )

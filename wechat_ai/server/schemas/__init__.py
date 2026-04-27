@@ -14,10 +14,14 @@ from .desktop import (
     DashboardSummaryData,
     IdentityCandidateData,
     IdentityDraftData,
+    KnowledgeAcceptanceSnapshotData,
+    KnowledgeFileImportData,
     KnowledgeImportResultData,
     KnowledgeSearchResultData,
     KnowledgeStatusData,
     LogsSummaryData,
+    PromptAcceptancePreviewData,
+    PromptAcceptanceSelfIdentityData,
     PrivacyPolicyData,
     ReplySuggestionData,
     RetentionApplyResultData,
@@ -27,6 +31,7 @@ from .desktop import (
     WebKnowledgeBuildResultData,
     WechatEnvironmentData,
 )
+from .events import EventContractData, EventFieldSpecData, EventTypeContractData
 from .frontend import (
     ConversationControlPatchRequest,
     KnowledgeImportRequest,
@@ -37,7 +42,7 @@ from .frontend import (
     SettingsPatchRequest,
     WebKnowledgeBuildRequest,
 )
-from .runtime import RuntimeActionData, RuntimeStatusData
+from .runtime import RuntimeActionData, RuntimeBootstrapData, RuntimeBootstrapStartRequest, RuntimeStatusData
 
 __all__ = [
     "ApiErrorPayload",
@@ -51,20 +56,29 @@ __all__ = [
     "CustomerData",
     "DashboardSummaryData",
     "ErrorCatalogData",
+    "EventContractData",
+    "EventFieldSpecData",
+    "EventTypeContractData",
     "HttpErrorCodeData",
     "IdentityCandidateData",
     "IdentityDraftData",
+    "KnowledgeAcceptanceSnapshotData",
+    "KnowledgeFileImportData",
     "KnowledgeImportResultData",
     "KnowledgeImportRequest",
     "KnowledgeSearchResultData",
     "KnowledgeStatusData",
     "LogsSummaryData",
+    "PromptAcceptancePreviewData",
+    "PromptAcceptanceSelfIdentityData",
     "PrivacyPolicyData",
     "PrivacyPolicyPatchRequest",
     "ReplySuggestionRequest",
     "ReplySuggestionData",
     "RetentionApplyResultData",
     "RuntimeActionData",
+    "RuntimeBootstrapData",
+    "RuntimeBootstrapStartRequest",
     "RuntimeStatusData",
     "SelfIdentityData",
     "SelfIdentityPatchRequest",

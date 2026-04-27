@@ -116,6 +116,7 @@ class WeChatWindowProbe:
         main_window: Any | None = None,
         chat_list: Any | None = None,
         limit: int = 20,
+        detect_ownership: bool = True,
     ) -> list[VisibleMessage]:
         if main_window is None:
             main_window = self._open_main_window()
@@ -131,7 +132,7 @@ class WeChatWindowProbe:
                 VisibleMessage(
                     text=text,
                     runtime_id=_runtime_id(item),
-                    is_mine=self._safe_is_my_bubble(main_window, item),
+                    is_mine=self._safe_is_my_bubble(main_window, item) if detect_ownership else None,
                 )
             )
         return messages
@@ -184,7 +185,10 @@ class PyWeixinVisualSendConfirmer:
             return False
         deadline = time.time() + max(self.timeout_seconds, 0.0)
         while True:
-            messages = self.probe.collect_visible_messages(limit=self.recent_limit)
+            messages = self.probe.collect_visible_messages(
+                limit=self.recent_limit,
+                detect_ownership=False,
+            )
             if _has_matching_visible_message(messages, target):
                 return True
             if time.time() >= deadline:

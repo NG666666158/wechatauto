@@ -1,0 +1,13 @@
+{
+  "data": {
+    "documents": [
+      "产品手册.pdf",
+      "行业资料合集.docx"
+    ],
+    "search_limit": 5,
+    "status": "built"
+  },
+  "error": null,
+  "success": true,
+  "trace_id": "fixture-knowledge-web-build"
+}

@@ -1,0 +1,37 @@
+{
+  "success": true,
+  "data": {
+    "imported_files": [
+      "product.pdf"
+    ],
+    "search_query": "试用政策",
+    "retrieved_chunk_ids": [
+      "chunk_001"
+    ],
+    "retrieved_chunks": [
+      {
+        "chunk_id": "chunk_001",
+        "text": "试用政策：支持 7 天体验，可先登记后开通。",
+        "score": 0.9
+      }
+    ],
+    "knowledge_status": {
+      "ready": true,
+      "index_path": "wechat_ai/data/knowledge/local_knowledge_index.json",
+      "documents_loaded": 1,
+      "chunks_created": 1,
+      "last_built_at": "2026-04-25T10:00:00Z",
+      "embedding_provider": "fake",
+      "supported_extensions": [
+        ".txt",
+        ".md",
+        ".json",
+        ".pdf",
+        ".docx"
+      ]
+    },
+    "web_build_status": "built"
+  },
+  "error": null,
+  "trace_id": "fixture-trace"
+}

@@ -88,8 +88,11 @@ class FakeNavigator:
 
 
 class FakeTools:
+    calls = 0
+
     @staticmethod
     def is_my_bubble(window, item) -> bool:
+        FakeTools.calls += 1
         return bool(getattr(item, "mine", False))
 
 
@@ -151,6 +154,29 @@ class WeChatWindowProbeTests(TestCase):
         confirmed = confirmer.confirm_sent(conversation_id="friend:Alice", text="confirmed reply")
 
         self.assertTrue(confirmed)
+
+    def test_visual_confirmer_does_not_right_click_messages_for_ownership(self) -> None:
+        from wechat_ai.app.wechat_window_probe import PyWeixinVisualSendConfirmer
+
+        FakeTools.calls = 0
+        window = FakeWindow(messages=[FakeElement("previous", runtime_id=1), FakeElement("confirmed reply", mine=True, runtime_id=2)])
+        confirmer = PyWeixinVisualSendConfirmer(probe=build_probe(window))
+
+        confirmed = confirmer.confirm_sent(conversation_id="friend:Alice", text="confirmed reply")
+
+        self.assertTrue(confirmed)
+        self.assertEqual(FakeTools.calls, 0)
+
+    def test_collect_visible_messages_can_skip_ownership_detection(self) -> None:
+        FakeTools.calls = 0
+        window = FakeWindow(messages=[FakeElement("hello", runtime_id=1), FakeElement("sent", mine=True, runtime_id=2)])
+        probe = build_probe(window)
+
+        messages = probe.collect_visible_messages(detect_ownership=False)
+
+        self.assertEqual([item.text for item in messages], ["hello", "sent"])
+        self.assertEqual([item.is_mine for item in messages], [None, None])
+        self.assertEqual(FakeTools.calls, 0)
 
     def test_visual_confirmer_rejects_when_text_is_not_visible(self) -> None:
         from wechat_ai.app.wechat_window_probe import PyWeixinVisualSendConfirmer

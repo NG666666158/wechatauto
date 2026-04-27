@@ -16,6 +16,8 @@ from typing import Iterable
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from wechat_ai.app.wechat_bootstrap import is_process_running  # noqa: E402
+
 
 WECHAT_PROCESS_NAMES = ("WeChat.exe", "Weixin.exe")
 NARRATOR_PROCESS_NAME = "Narrator.exe"
@@ -41,6 +43,8 @@ class ManualChecklistItem:
 def _windows_process_names() -> set[str]:
     if platform.system().lower() != "windows":
         return set()
+    expected_processes = (*WECHAT_PROCESS_NAMES, NARRATOR_PROCESS_NAME)
+    names: set[str] = set()
     try:
         result = subprocess.run(
             ["tasklist", "/fo", "csv", "/nh"],
@@ -50,13 +54,23 @@ def _windows_process_names() -> set[str]:
             timeout=5,
         )
     except (OSError, subprocess.SubprocessError):
-        return set()
-    if result.returncode != 0:
-        return set()
-    names: set[str] = set()
-    for row in csv.reader(result.stdout.splitlines()):
-        if row:
-            names.add(row[0].strip().lower())
+        result = None
+    if result is not None and result.returncode == 0:
+        for row in csv.reader(result.stdout.splitlines()):
+            if row:
+                names.add(row[0].strip().lower())
+
+    # Some locked-down Windows sessions deny tasklist/WMI even though pywinauto
+    # can still see WeChat. Reuse the bootstrapper's Get-Process fallback so
+    # readiness agrees with the real launcher path.
+    for process_name in expected_processes:
+        if process_name.lower() in names:
+            continue
+        try:
+            if is_process_running(process_name):
+                names.add(process_name.lower())
+        except Exception:
+            continue
     return names
 
 
@@ -67,6 +81,14 @@ def _candidate_wechat_paths() -> list[Path]:
         value = os.environ.get(env_name)
         if value:
             candidates.append(Path(value))
+
+    candidates.extend(
+        [
+            Path(r"C:\Weixin\Weixin.exe"),
+            Path(r"C:\Program Files\Tencent\WeChat\WeChat.exe"),
+            Path(r"C:\Program Files (x86)\Tencent\WeChat\WeChat.exe"),
+        ]
+    )
 
     for base_env in ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"):
         base = os.environ.get(base_env)
@@ -105,6 +127,52 @@ def _display_scaling_detail() -> tuple[str, str]:
     )
 
 
+def _desktop_window_enumeration_detail() -> tuple[str, str, str]:
+    if platform.system().lower() != "windows":
+        return ("info", "非 Windows 环境，跳过桌面窗口枚举。", "仅 Windows 真实联调需要校验这一项。")
+    try:
+        import win32gui  # type: ignore
+    except Exception as exc:
+        return (
+            "manual",
+            f"无法导入 win32gui：{type(exc).__name__}: {exc}",
+            "请确认 pywin32 可用；否则 UI 自动化无法稳定探测微信窗口。",
+        )
+
+    total = 0
+    visible = 0
+
+    def _callback(hwnd: int, _param: object) -> bool:
+        nonlocal total, visible
+        total += 1
+        try:
+            if win32gui.IsWindowVisible(hwnd):
+                visible += 1
+        except Exception:
+            pass
+        return True
+
+    try:
+        win32gui.EnumWindows(_callback, None)
+    except Exception as exc:
+        return (
+            "warn",
+            f"当前执行上下文无法枚举桌面窗口：{type(exc).__name__}: {exc}",
+            "请从与微信相同的交互式桌面/权限级别启动后端或真实监听脚本。",
+        )
+    if total <= 0:
+        return (
+            "warn",
+            "当前执行上下文枚举到 0 个桌面窗口；UIA/Win32 看不到真实桌面。",
+            "请不要在该上下文启动真实监听。改用你手动打开的 PowerShell/客户端进程启动，确保它和微信在同一交互式桌面。",
+        )
+    return (
+        "ok",
+        f"当前执行上下文可枚举桌面窗口：total={total}, visible={visible}。",
+        "可以继续执行只读微信窗口探测；真实监听前仍需确认微信主窗口未最小化。",
+    )
+
+
 def _ui_probe_check(wechat_running: bool) -> CheckItem:
     if not wechat_running:
         return CheckItem(
@@ -129,7 +197,13 @@ def _ui_probe_check(wechat_running: bool) -> CheckItem:
     ready = bool(result.get("ready"))
     recommendation = str(result.get("focus_recommendation", "")).strip()
     if not recommendation:
-        recommendation = "当前窗口探测通过；真实联调前仍建议确认目标会话和输入框焦点。"
+        reason = str(result.get("reason", "")).strip()
+        if ready:
+            recommendation = "当前窗口探测通过；真实联调前仍建议确认目标会话和输入框焦点。"
+        elif reason:
+            recommendation = f"窗口探测未就绪：{reason}"
+        else:
+            recommendation = "窗口探测未就绪；请确认微信主窗口可见、未最小化，并且脚本与微信处于同一交互式桌面。"
     return CheckItem(
         id="ui_ready_probe",
         title="UI ready 只读探测",
@@ -148,6 +222,7 @@ def build_readiness_report() -> dict[str, object]:
     narrator_running = NARRATOR_PROCESS_NAME.lower() in process_names
     existing_paths = _existing_wechat_paths()
     scaling_status, scaling_detail = _display_scaling_detail()
+    window_enum_status, window_enum_detail, window_enum_recommendation = _desktop_window_enumeration_detail()
 
     checks = [
         CheckItem(
@@ -182,6 +257,13 @@ def build_readiness_report() -> dict[str, object]:
                 else "未检测到 Narrator.exe 正在运行。"
             ),
             recommendation="首启引导可能会临时使用讲述人；真实长跑前建议确认它不会残留干扰焦点。",
+        ),
+        CheckItem(
+            id="desktop_window_enumeration",
+            title="桌面窗口枚举",
+            status=window_enum_status,
+            detail=window_enum_detail,
+            recommendation=window_enum_recommendation,
         ),
         _ui_probe_check(wechat_running),
         CheckItem(

@@ -14,47 +14,98 @@ from _bootstrap import configure_comtypes_cache  # noqa: E402
 
 configure_comtypes_cache(ROOT)
 
-from pyweixin import Contacts, GlobalConfig, Messages, Tools  # noqa: E402
+from pyweixin import GlobalConfig, Tools  # noqa: E402
+from pyweixin.Errors import NetWorkError, NotFoundError, NotLoginError, NotStartError  # noqa: E402
+from pyweixin.WeChatTools import Navigator, desktop, wx  # noqa: E402
 from wechat_ai.app.wechat_bootstrap import (  # noqa: E402
     BootstrapSettings,
     WeChatFirstRunBootstrapper,
     parse_guardian_command,
 )
 
+_ENTER_WECHAT_CLICKED = False
+
 
 def _ui_ready_check():
     checks: dict[str, object] = {}
+    errors: dict[str, str] = {}
+    _reset_wechat_window_cache()
+    if _click_enter_wechat_if_present():
+        checks["enter_wechat_clicked"] = True
+        return {"ready": False, "checks": checks, "errors": errors}
     try:
-        profile = Contacts.check_my_info(close_weixin=False)
-        if profile:
-            checks["my_profile"] = profile
+        main_window = Navigator.open_weixin(is_maximize=False)
+        checks["main_window"] = {
+            "handle": int(getattr(main_window, "handle", 0) or 0),
+            "class_name": main_window.class_name(),
+        }
+        return {"ready": True, "checks": checks, "errors": errors}
+    except (NotStartError, NotFoundError, NotLoginError, NetWorkError) as exc:
+        errors["main_window"] = f"{type(exc).__name__}: {exc}"
+        checks["state"] = type(exc).__name__
+    except Exception as exc:
+        errors["main_window"] = f"{type(exc).__name__}: {exc}"
+        checks["state"] = "unknown_error"
+    return {"ready": False, "checks": checks, "errors": errors}
+
+
+def _reset_wechat_window_cache() -> None:
+    try:
+        wx.hwnd = 0
+        wx.possible_windows = []
+        wx.window_type = 1
     except Exception:
         pass
+
+
+def _click_enter_wechat_if_present() -> bool:
+    global _ENTER_WECHAT_CLICKED
+    if _ENTER_WECHAT_CLICKED:
+        return False
     try:
-        sessions = Messages.dump_recent_sessions(recent="Today", chat_only=False, close_weixin=False)
-        if isinstance(sessions, list):
-            checks["recent_sessions"] = sessions[:3]
+        _reset_wechat_window_cache()
+        handle = wx.find_wx_window()
+        if not handle:
+            return False
+        window = desktop.window(handle=handle)
+        enter_button = window.child_window(title="进入微信", control_type="Button")
+        if not enter_button.exists(timeout=0.1):
+            return False
+        print("[bootstrap] 检测到进入微信按钮，点击后继续等待主界面。", flush=True)
+        enter_button.click_input()
+        _ENTER_WECHAT_CLICKED = True
+        return True
     except Exception:
-        pass
-    try:
-        new_messages = Messages.check_new_messages(close_weixin=False)
-        if new_messages is not None:
-            checks["new_messages"] = new_messages
-    except Exception:
-        pass
-    return checks
+        return False
 
 
 def _locate_wechat_path() -> str:
     try:
-        return str(Tools.where_weixin(copy_to_clipboard=False) or "").strip()
+        detected = str(Tools.where_weixin(copy_to_clipboard=False) or "").strip()
+        if detected:
+            return detected
     except Exception:
-        return ""
+        pass
+    for candidate in (
+        Path(r"C:\Weixin\Weixin.exe"),
+        Path.home() / r"AppData\Local\Tencent\Weixin\Weixin.exe",
+        Path.home() / r"AppData\Roaming\Tencent\Weixin\Weixin.exe",
+    ):
+        if candidate.exists():
+            return str(candidate)
+    return r"C:\Weixin\Weixin.exe"
 
 
 def _is_wechat_running() -> bool:
     try:
         return bool(Tools.is_weixin_running())
+    except Exception:
+        return False
+
+
+def _is_wechat_window_available() -> bool:
+    try:
+        return bool(Tools.is_weixin_running() and wx.find_wx_window())
     except Exception:
         return False
 
@@ -91,6 +142,7 @@ def main() -> int:
         status_callback=lambda message: print(f"[bootstrap] {message}", flush=True),
         locate_wechat_path=lambda: args.wechat_path.strip() or _locate_wechat_path(),
         is_wechat_running=_is_wechat_running,
+        is_wechat_window_available=_is_wechat_window_available,
     )
     result = bootstrapper.run(
         BootstrapSettings(

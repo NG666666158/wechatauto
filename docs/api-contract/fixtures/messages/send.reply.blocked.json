@@ -1,0 +1,13 @@
+{
+  "data": {
+    "allowed": false,
+    "conversation_id": "friend:zhang",
+    "reason": "回复内容不能为空。",
+    "reason_code": "EMPTY_TEXT",
+    "status": "blocked",
+    "text": ""
+  },
+  "error": null,
+  "success": true,
+  "trace_id": "fixture-messages-send-blocked"
+}

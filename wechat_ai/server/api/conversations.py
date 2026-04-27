@@ -5,6 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 
+from wechat_ai.server.api._events import publish_event
 from wechat_ai.server.api._service import desktop_service
 from wechat_ai.server.core import success_response
 from wechat_ai.server.schemas import (
@@ -51,8 +52,19 @@ def send_reply(
     payload: SendReplyRequest,
     request: Request,
 ) -> dict[str, object]:
+    data = desktop_service(request).send_reply(conversation_id, payload.text)
+    publish_event(
+        request,
+        "message.sent",
+        {
+            "conversation_id": data.get("conversation_id", conversation_id) if isinstance(data, dict) else conversation_id,
+            "status": data.get("status", "") if isinstance(data, dict) else "",
+            "allowed": data.get("allowed", False) if isinstance(data, dict) else False,
+            "reason_code": data.get("reason_code", "") if isinstance(data, dict) else "",
+        },
+    )
     return success_response(
-        desktop_service(request).send_reply(conversation_id, payload.text),
+        data,
         trace_id=request.state.trace_id,
     )
 

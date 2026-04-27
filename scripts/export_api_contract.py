@@ -13,6 +13,8 @@ if str(ROOT) not in sys.path:
 
 
 DEFAULT_OUTPUT_DIR = ROOT / "docs" / "api-contract"
+BASELINE_FILE_NAME = "api-contract.baseline.json"
+OPENAPI_FILE_NAME = "openapi.snapshot.json"
 
 
 def _configure_utf8_stdio() -> None:
@@ -118,7 +120,7 @@ def build_api_contract(openapi: dict[str, Any]) -> dict[str, Any]:
         "schema_count": len(schema_names),
         "schemas": schema_names,
         "frontend_pages": {
-            "home": ["/api/v1/dashboard/summary", "/api/v1/runtime/status"],
+            "home": ["/api/v1/dashboard/summary", "/api/v1/runtime/status", "/api/v1/runtime/bootstrap-check", "/api/v1/runtime/bootstrap-start"],
             "messages": ["/api/v1/conversations", "/api/v1/conversations/{conversation_id}", "/api/v1/conversations/{conversation_id}/suggest", "/api/v1/conversations/{conversation_id}/send"],
             "customers": ["/api/v1/customers", "/api/v1/customers/{customer_id}", "/api/v1/identity/drafts", "/api/v1/identity/candidates"],
             "knowledge": ["/api/v1/knowledge/status", "/api/v1/knowledge/search", "/api/v1/knowledge/import", "/api/v1/knowledge/web-build"],
@@ -134,15 +136,45 @@ def export_api_contract(output_dir: Path = DEFAULT_OUTPUT_DIR) -> dict[str, Any]
     openapi = app.openapi()
     contract = build_api_contract(openapi)
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "openapi.snapshot.json").write_text(
-        json.dumps(openapi, ensure_ascii=False, indent=2, sort_keys=True),
+    (output_dir / OPENAPI_FILE_NAME).write_text(
+        _stable_json(openapi),
         encoding="utf-8",
     )
-    (output_dir / "api-contract.baseline.json").write_text(
-        json.dumps(contract, ensure_ascii=False, indent=2, sort_keys=True),
+    (output_dir / BASELINE_FILE_NAME).write_text(
+        _stable_json(contract),
         encoding="utf-8",
     )
     return contract
+
+
+def assert_api_contract_snapshots_current(output_dir: Path = DEFAULT_OUTPUT_DIR) -> None:
+    from wechat_ai.server import create_app
+
+    openapi = create_app().openapi()
+    contract = build_api_contract(openapi)
+    expected_files = {
+        BASELINE_FILE_NAME: _stable_json(contract),
+        OPENAPI_FILE_NAME: _stable_json(openapi),
+    }
+    mismatches: list[str] = []
+    for file_name, expected_text in expected_files.items():
+        snapshot_path = output_dir / file_name
+        if not snapshot_path.exists():
+            mismatches.append(f"{file_name}: missing")
+            continue
+        actual_text = snapshot_path.read_text(encoding="utf-8")
+        if actual_text != expected_text:
+            mismatches.append(f"{file_name}: stale")
+    if mismatches:
+        detail = ", ".join(mismatches)
+        raise AssertionError(
+            "API contract snapshots are not current "
+            f"({detail}). Run: py -3 scripts\\export_api_contract.py --output-dir docs\\api-contract --format json"
+        )
+
+
+def _stable_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
 
 def format_contract_markdown(contract: dict[str, Any]) -> str:
@@ -174,12 +206,21 @@ def parse_args(argv: Iterable[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Export the local FastAPI OpenAPI snapshot and frontend API contract baseline.")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--format", choices=("json", "markdown"), default="json")
+    parser.add_argument("--check", action="store_true", help="Verify committed snapshots are current without writing files.")
     return parser.parse_args(list(argv))
 
 
 def main(argv: Iterable[str] | None = None) -> int:
     _configure_utf8_stdio()
     args = parse_args(sys.argv[1:] if argv is None else argv)
+    if args.check:
+        try:
+            assert_api_contract_snapshots_current(args.output_dir)
+        except AssertionError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        print("API contract snapshots are current")
+        return 0
     contract = export_api_contract(args.output_dir)
     if args.format == "markdown":
         print(format_contract_markdown(contract))
